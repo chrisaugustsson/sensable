@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.turbo/
+target/
+
+# Tauri
+apps/sensable/src-tauri/target/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local

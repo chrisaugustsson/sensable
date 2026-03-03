@@ -1,0 +1,3 @@
+[workspace]
+members = ["apps/sensable/src-tauri", "apps/sensable-mcp"]
+resolver = "2"

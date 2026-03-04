@@ -200,8 +200,9 @@ export function useApprovalToasts() {
   useEffect(() => {
     const currentIds = new Set(pendingApprovals.map((a) => a.requestId));
 
-    // Show toasts for new approvals
+    // Show toasts for new approvals (plan approvals are handled by PlanDialog)
     for (const approval of pendingApprovals) {
+      if (approval.action === "plan") continue;
       if (!shownRef.current.has(approval.requestId)) {
         shownRef.current.add(approval.requestId);
         const toastId = `approval-${approval.requestId}`;

@@ -114,6 +114,20 @@ export async function readDesignSystemTokens(
   return invoke("read_design_system_tokens", { projectPath });
 }
 
+export async function deleteLayout(
+  projectPath: string,
+  layoutId: string,
+): Promise<Project> {
+  return invoke("delete_layout", { projectPath, layoutId });
+}
+
+export async function deleteComponent(
+  projectPath: string,
+  componentId: string,
+): Promise<Project> {
+  return invoke("delete_component", { projectPath, componentId });
+}
+
 export async function syncDesignSystem(
   projectPath: string,
 ): Promise<Project> {
@@ -186,6 +200,13 @@ export async function startPrototypeServer(
 
 export async function stopPrototypeServer(): Promise<void> {
   return invoke("stop_prototype_server");
+}
+
+export async function reinstallPrototypeServer(
+  projectPath: string,
+  framework: string,
+): Promise<void> {
+  return invoke("reinstall_prototype_server", { projectPath, framework });
 }
 
 export async function getPrototypeServerStatus(

@@ -16,6 +16,7 @@
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-shell": "^2",
+    "mermaid": "^11.12.3",
     "react": "^19",
     "react-dom": "^19",
     "react-markdown": "^10.1.0",

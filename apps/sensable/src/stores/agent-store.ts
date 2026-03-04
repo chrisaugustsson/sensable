@@ -34,7 +34,7 @@ export interface PendingApproval {
   artifactType: string;
   title: string;
   preview: unknown;
-  action: "create" | "update" | "delete" | "transition";
+  action: "create" | "update" | "delete" | "transition" | "plan";
   existing?: unknown;
 }
 

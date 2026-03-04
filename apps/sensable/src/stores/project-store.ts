@@ -36,6 +36,7 @@ interface ProjectState {
   createFeature: (name: string, description: string) => Promise<Feature | null>;
   updateFeature: (feature: Feature) => Promise<void>;
   deleteFeature: (featureId: string) => Promise<void>;
+  setFramework: (framework: "react" | "vue") => Promise<void>;
   bumpFileWriteVersion: () => void;
 }
 
@@ -161,6 +162,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set({ project: updated });
     } catch (e) {
       console.error("Failed to update feature:", e);
+    }
+  },
+
+  setFramework: async (framework) => {
+    const { project, projectPath } = get();
+    if (!project || !projectPath) return;
+
+    const updated = { ...project, framework };
+    set({ project: updated });
+
+    try {
+      const persisted = await tauri.updateProject(projectPath, updated);
+      set({ project: persisted });
+    } catch (e) {
+      console.error("Failed to update framework:", e);
+      set({ project }); // rollback
     }
   },
 

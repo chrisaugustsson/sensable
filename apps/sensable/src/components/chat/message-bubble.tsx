@@ -1,4 +1,4 @@
-import Markdown from "react-markdown";
+import { MarkdownRenderer } from "../markdown-renderer";
 import type { AgentMessage, ContentBlock } from "../../stores/agent-store";
 
 function TextBlockBubble({
@@ -13,9 +13,7 @@ function TextBlockBubble({
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-muted text-foreground">
-        <div className="prose prose-sm prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-          <Markdown>{block.content}</Markdown>
-        </div>
+        <MarkdownRenderer content={block.content} />
         {isStreaming && isLastBlock && (
           <span className="inline-block h-3 w-1 animate-pulse bg-current opacity-70" />
         )}

@@ -733,7 +733,10 @@ fn scan_html_files_to_manifest(dir: &Path) -> Result<WireframeManifest, String> 
             let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
             let path = entry.path();
             if path.extension().map_or(false, |ext| ext == "html") {
-                let filename = path.file_name().unwrap().to_string_lossy().to_string();
+                let filename = match path.file_name() {
+                    Some(name) => name.to_string_lossy().to_string(),
+                    None => continue,
+                };
                 let stem = filename.trim_end_matches(".html");
 
                 // Parse: "option-N" or "option-N-variantlabel"
@@ -960,10 +963,10 @@ struct LayoutMetadata {
 #[tauri::command]
 pub fn sync_design_system(project_path: String) -> Result<Project, String> {
     let json_path = project_json_path(&project_path);
-    let contents =
-        fs::read_to_string(&json_path).map_err(|e| format!("Failed to read project.json: {}", e))?;
-    let mut project: Project =
-        serde_json::from_str(&contents).map_err(|e| format!("Invalid project.json: {}", e))?;
+    // Verify project.json is readable before scanning directories
+    if !json_path.exists() {
+        return Err("No .sensable/project.json found".to_string());
+    }
 
     let ds_dir = sensable_dir(&project_path).join("design-system");
 
@@ -977,19 +980,26 @@ pub fn sync_design_system(project_path: String) -> Result<Project, String> {
             let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
             let path = entry.path();
             if path.is_dir() {
-                let id = path
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
+                let id = match path.file_name() {
+                    Some(name) => name.to_string_lossy().to_string(),
+                    None => continue,
+                };
                 let metadata_path = path.join("metadata.json");
-                let has_example = path.join("example.tsx").exists() || path.join("example.vue").exists();
+                let has_example = path.join("example.tsx").exists()
+                    || path.join("Example.tsx").exists()
+                    || path.join("example.vue").exists()
+                    || path.join("Example.vue").exists();
 
                 if metadata_path.exists() {
-                    let meta_str = fs::read_to_string(&metadata_path)
-                        .map_err(|e| format!("Failed to read metadata.json: {}", e))?;
-                    let meta: ComponentMetadata = serde_json::from_str(&meta_str)
-                        .map_err(|e| format!("Invalid metadata.json in {}: {}", id, e))?;
+                    // Use continue on errors so partially-written files (from concurrent agent writes) don't fail the sync
+                    let meta_str = match fs::read_to_string(&metadata_path) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let meta: ComponentMetadata = match serde_json::from_str(&meta_str) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
                     components.push(DesignSystemComponent {
                         id,
                         name: meta.name,
@@ -1033,19 +1043,25 @@ pub fn sync_design_system(project_path: String) -> Result<Project, String> {
             let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
             let path = entry.path();
             if path.is_dir() {
-                let id = path
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
+                let id = match path.file_name() {
+                    Some(name) => name.to_string_lossy().to_string(),
+                    None => continue,
+                };
                 let metadata_path = path.join("metadata.json");
-                let has_example = path.join("example.tsx").exists() || path.join("example.vue").exists();
+                let has_example = path.join("example.tsx").exists()
+                    || path.join("Example.tsx").exists()
+                    || path.join("example.vue").exists()
+                    || path.join("Example.vue").exists();
 
                 if metadata_path.exists() {
-                    let meta_str = fs::read_to_string(&metadata_path)
-                        .map_err(|e| format!("Failed to read metadata.json: {}", e))?;
-                    let meta: LayoutMetadata = serde_json::from_str(&meta_str)
-                        .map_err(|e| format!("Invalid metadata.json in {}: {}", id, e))?;
+                    let meta_str = match fs::read_to_string(&metadata_path) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let meta: LayoutMetadata = match serde_json::from_str(&meta_str) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
                     layouts.push(DesignSystemLayout {
                         id,
                         name: meta.name,
@@ -1076,8 +1092,14 @@ pub fn sync_design_system(project_path: String) -> Result<Project, String> {
     }
     layouts.sort_by(|a, b| a.id.cmp(&b.id));
 
-    // Update project
-    let ds = project.design_system.get_or_insert(DesignSystemStatus {
+    // Re-read project.json to get the latest version (another command or MCP tool may have written to it)
+    let fresh_contents =
+        fs::read_to_string(&json_path).map_err(|e| format!("Failed to re-read project.json: {}", e))?;
+    let mut fresh_project: Project =
+        serde_json::from_str(&fresh_contents).map_err(|e| format!("Invalid project.json on re-read: {}", e))?;
+
+    // Only update the design system scan results, preserving all other fields
+    let ds = fresh_project.design_system.get_or_insert(DesignSystemStatus {
         status: "not-started".to_string(),
         theme: None,
         component_library: None,
@@ -1087,14 +1109,618 @@ pub fn sync_design_system(project_path: String) -> Result<Project, String> {
     ds.components = components;
     ds.layouts = layouts;
 
-    project.updated_at = chrono::Utc::now().to_rfc3339();
+    fresh_project.updated_at = chrono::Utc::now().to_rfc3339();
 
-    let json = serde_json::to_string_pretty(&project)
+    let json = serde_json::to_string_pretty(&fresh_project)
         .map_err(|e| format!("Failed to serialize project: {}", e))?;
     fs::write(&json_path, json)
         .map_err(|e| format!("Failed to write project.json: {}", e))?;
 
-    Ok(project)
+    // Generate preview entry files in the prototype-server
+    let framework = fresh_project.framework.as_deref().unwrap_or("react");
+    generate_preview_entries(&project_path, framework);
+
+    Ok(fresh_project)
+}
+
+/// Delete a layout from the design system
+#[tauri::command]
+pub fn delete_layout(project_path: String, layout_id: String) -> Result<Project, String> {
+    let layout_dir = sensable_dir(&project_path)
+        .join("design-system")
+        .join("layouts")
+        .join(&layout_id);
+
+    if layout_dir.exists() {
+        fs::remove_dir_all(&layout_dir)
+            .map_err(|e| format!("Failed to remove layout directory: {}", e))?;
+    }
+
+    // Re-sync to update project.json
+    sync_design_system(project_path)
+}
+
+/// Delete a component from the design system
+#[tauri::command]
+pub fn delete_component(project_path: String, component_id: String) -> Result<Project, String> {
+    let component_dir = sensable_dir(&project_path)
+        .join("design-system")
+        .join("components")
+        .join(&component_id);
+
+    if component_dir.exists() {
+        fs::remove_dir_all(&component_dir)
+            .map_err(|e| format!("Failed to remove component directory: {}", e))?;
+    }
+
+    // Re-sync to update project.json
+    sync_design_system(project_path)
+}
+
+/// Convert a kebab-case ID to a PascalCase identifier for JS imports.
+/// e.g. "button-primary" -> "ButtonPrimary", "nav-item" -> "NavItem"
+fn to_pascal_case(id: &str) -> String {
+    id.split('-')
+        .map(|s| {
+            let mut c = s.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().to_string() + c.as_str(),
+            }
+        })
+        .collect()
+}
+
+/// Info collected during per-entry generation for building the catalog page.
+struct CatalogEntry {
+    id: String,
+    ident: String,
+    name: String,
+    category: String,
+    description: String,
+    example_file: String,
+    item_type: String, // "components" or "layouts"
+}
+
+/// Generate preview entry files in the prototype-server for each component/layout
+/// that has an example file. This creates index.html + main entry for Vite MPA serving.
+pub fn generate_preview_entries(project_path: &str, framework: &str) {
+    let sensable = sensable_dir(project_path);
+    let proto_dir = sensable.join("prototype-server");
+    let ds_dir = sensable.join("design-system");
+
+    // Skip if prototype-server isn't set up
+    if !proto_dir.join("package.json").exists() {
+        return;
+    }
+
+    let is_vue = framework == "vue";
+    let mut catalog_entries: Vec<CatalogEntry> = Vec::new();
+
+    // Generate entries for components and layouts
+    for item_type in &["components", "layouts"] {
+        let src_dir = ds_dir.join(item_type);
+        let dest_dir = proto_dir.join("design-system").join(item_type);
+
+        if !src_dir.exists() {
+            continue;
+        }
+
+        let entries = match fs::read_dir(&src_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let id = match path.file_name() {
+                Some(name) => name.to_string_lossy().to_string(),
+                None => continue,
+            };
+
+            // Find the example file
+            let example_file = if is_vue {
+                if path.join("Example.vue").exists() {
+                    Some("Example.vue")
+                } else if path.join("example.vue").exists() {
+                    Some("example.vue")
+                } else {
+                    None
+                }
+            } else if path.join("example.tsx").exists() {
+                Some("example.tsx")
+            } else if path.join("Example.tsx").exists() {
+                Some("Example.tsx")
+            } else {
+                None
+            };
+
+            let example_file = match example_file {
+                Some(f) => f,
+                None => continue,
+            };
+
+            let entry_dir = dest_dir.join(&id);
+            let _ = fs::create_dir_all(&entry_dir);
+
+            // Determine the alias prefix based on item type
+            let alias = if *item_type == "components" {
+                "@components"
+            } else {
+                "@layouts"
+            };
+
+            // Write index.html
+            let (mount_id, main_ext) = if is_vue {
+                ("app", "main.ts")
+            } else {
+                ("root", "main.tsx")
+            };
+            let index_html = format!(
+                r#"<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{id}</title>
+    <script>
+      window.addEventListener("message", (e) => {{
+        if (e.data?.type === "set-theme") {{
+          document.documentElement.classList.toggle("dark", e.data.theme === "dark");
+        }}
+      }});
+      new ResizeObserver(() => {{
+        window.parent.postMessage({{ type: "catalog-resize", height: document.documentElement.scrollHeight }}, "*");
+      }}).observe(document.documentElement);
+    </script>
+  </head>
+  <body class="bg-background text-foreground">
+    <div id="{mount_id}"></div>
+    <script type="module" src="./{main_ext}"></script>
+  </body>
+</html>
+"#
+            );
+            let _ = fs::write(entry_dir.join("index.html"), index_html);
+
+            // Write main entry
+            let main_content = if is_vue {
+                format!(
+                    r##"import {{ createApp }} from "vue";
+import "@/globals.css";
+import Example from "{alias}/{id}/{example_file}";
+
+createApp(Example).mount("#app");
+"##
+                )
+            } else {
+                format!(
+                    r##"import React from "react";
+import ReactDOM from "react-dom/client";
+import "@/globals.css";
+import Example from "{alias}/{id}/{example_file}";
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <Example />
+  </React.StrictMode>
+);
+"##
+                )
+            };
+            let _ = fs::write(entry_dir.join(main_ext), main_content);
+
+            // Collect info for catalog page
+            let ident = to_pascal_case(&id);
+            let (name, category, description) = {
+                let metadata_path = path.join("metadata.json");
+                if metadata_path.exists() {
+                    if let Ok(meta_str) = fs::read_to_string(&metadata_path) {
+                        if *item_type == "components" {
+                            if let Ok(meta) = serde_json::from_str::<ComponentMetadata>(&meta_str) {
+                                (meta.name, meta.category, meta.description.unwrap_or_default())
+                            } else {
+                                (id.clone(), "general".to_string(), String::new())
+                            }
+                        } else if let Ok(meta) = serde_json::from_str::<LayoutMetadata>(&meta_str) {
+                            (meta.name, "layouts".to_string(), meta.description.unwrap_or_default())
+                        } else {
+                            (id.clone(), "layouts".to_string(), String::new())
+                        }
+                    } else {
+                        (id.clone(), if *item_type == "components" { "general".to_string() } else { "layouts".to_string() }, String::new())
+                    }
+                } else {
+                    // Infer name from id
+                    let inferred = id.split('-').map(|s| {
+                        let mut c = s.chars();
+                        match c.next() {
+                            None => String::new(),
+                            Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                        }
+                    }).collect::<Vec<_>>().join(" ");
+                    (inferred, if *item_type == "components" { "general".to_string() } else { "layouts".to_string() }, String::new())
+                }
+            };
+            catalog_entries.push(CatalogEntry {
+                id: id.clone(),
+                ident,
+                name,
+                category,
+                description,
+                example_file: example_file.to_string(),
+                item_type: item_type.to_string(),
+            });
+        }
+    }
+
+    // Generate separate catalog pages for components and layouts
+    let component_entries: Vec<&CatalogEntry> = catalog_entries.iter().filter(|e| e.item_type == "components").collect();
+    let layout_entries: Vec<&CatalogEntry> = catalog_entries.iter().filter(|e| e.item_type == "layouts").collect();
+    generate_catalog_page(&proto_dir, &component_entries, "components", is_vue);
+    generate_catalog_page(&proto_dir, &layout_entries, "layouts", is_vue);
+}
+
+/// Generate a catalog page (index.html + main.tsx) for a specific item type
+/// that renders all items on a single scrollable page grouped by category.
+fn generate_catalog_page(proto_dir: &std::path::Path, entries: &[&CatalogEntry], catalog_name: &str, is_vue: bool) {
+    if entries.is_empty() {
+        return;
+    }
+
+    let catalog_dir = proto_dir.join("design-system").join(format!("{}-catalog", catalog_name));
+    let _ = fs::create_dir_all(&catalog_dir);
+
+    let (mount_id, main_ext) = if is_vue {
+        ("app", "main.ts")
+    } else {
+        ("root", "main.tsx")
+    };
+
+    // Write index.html
+    let index_html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Component Catalog</title>
+    <script>
+      window.addEventListener("message", (e) => {{
+        if (e.data?.type === "set-theme") {{
+          document.documentElement.classList.toggle("dark", e.data.theme === "dark");
+        }}
+      }});
+      // Report content height to parent so iframe can auto-resize
+      new ResizeObserver(() => {{
+        window.parent.postMessage({{ type: "catalog-resize", height: document.documentElement.scrollHeight }}, "*");
+      }}).observe(document.documentElement);
+    </script>
+  </head>
+  <body class="bg-background text-foreground">
+    <div id="{mount_id}"></div>
+    <script type="module" src="./{main_ext}"></script>
+  </body>
+</html>
+"#
+    );
+    let _ = fs::write(catalog_dir.join("index.html"), index_html);
+
+    // Generate main entry file
+    let main_content = if is_vue {
+        generate_catalog_main_vue(entries, catalog_name)
+    } else {
+        generate_catalog_main_react(entries, catalog_name)
+    };
+    let _ = fs::write(catalog_dir.join(main_ext), main_content);
+}
+
+fn generate_catalog_main_react(entries: &[&CatalogEntry], catalog_name: &str) -> String {
+    let alias = if catalog_name == "components" { "@components" } else { "@layouts" };
+
+    // Build import statements
+    let mut imports = String::new();
+    for e in entries {
+        imports.push_str(&format!(
+            "import {ident}Example from \"{alias}/{id}/{file}\";\n",
+            ident = e.ident,
+            alias = alias,
+            id = e.id,
+            file = e.example_file,
+        ));
+    }
+
+    // Build items array
+    let mut items_js = String::new();
+    for e in entries {
+        let desc_escaped = e.description.replace('\\', "\\\\").replace('"', "\\\"");
+        let name_escaped = e.name.replace('\\', "\\\\").replace('"', "\\\"");
+        let cat_escaped = e.category.replace('\\', "\\\\").replace('"', "\\\"");
+        items_js.push_str(&format!(
+            "  {{ id: \"{id}\", name: \"{name}\", category: \"{cat}\", description: \"{desc}\", Component: {ident}Example }},\n",
+            id = e.id,
+            name = name_escaped,
+            cat = cat_escaped,
+            desc = desc_escaped,
+            ident = e.ident,
+        ));
+    }
+
+    format!(
+        r##"import React, {{ useState, useEffect, useRef }} from "react";
+import ReactDOM from "react-dom/client";
+import "@/globals.css";
+
+{imports}
+const ITEMS = [
+{items_js}];
+
+function CatalogApp() {{
+  const [view, setView] = useState("catalog");
+  const [selectedId, setSelectedId] = useState(null);
+
+  useEffect(() => {{
+    function onHashChange() {{
+      const hash = window.location.hash;
+      if (hash.startsWith("#detail/")) {{
+        const id = hash.slice("#detail/".length);
+        setView("detail");
+        setSelectedId(id);
+      }} else {{
+        setView("catalog");
+        setSelectedId(null);
+      }}
+    }}
+    window.addEventListener("hashchange", onHashChange);
+    onHashChange();
+
+    function handleMessage(e) {{
+      if (e.data?.type === "navigate-catalog") {{
+        window.location.hash = "";
+      }}
+    }}
+    window.addEventListener("message", handleMessage);
+
+    return () => {{
+      window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener("message", handleMessage);
+    }};
+  }}, []);
+
+  useEffect(() => {{
+    window.parent.postMessage({{ type: "catalog-navigation", view, selectedId }}, "*");
+  }}, [view, selectedId]);
+
+  if (view === "detail" && selectedId) {{
+    return <DetailView id={{selectedId}} onBack={{() => {{ window.location.hash = ""; }}}} />;
+  }}
+  return <CatalogView onSelect={{(id) => {{ window.location.hash = `#detail/${{id}}`; }}}} />;
+}}
+
+function CatalogView({{ onSelect }}) {{
+  const categories = new Map();
+  for (const item of ITEMS) {{
+    const cat = item.category || "general";
+    if (!categories.has(cat)) categories.set(cat, []);
+    categories.get(cat).push(item);
+  }}
+  const categoryRefs = useRef(new Map());
+  const catKeys = [...categories.keys()].sort();
+
+  return (
+    <div className="min-h-screen">
+      {{catKeys.length > 1 && (
+        <nav className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-6 py-2 flex gap-2 overflow-x-auto">
+          {{catKeys.map((cat) => (
+            <button
+              key={{cat}}
+              onClick={{() => categoryRefs.current.get(cat)?.scrollIntoView({{ behavior: "smooth", block: "start" }})}}
+              className="shrink-0 rounded-md px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors capitalize"
+            >
+              {{cat}} <span className="text-[10px] ml-1 opacity-60">({{categories.get(cat).length}})</span>
+            </button>
+          ))}}
+        </nav>
+      )}}
+
+      <div className="p-6 space-y-10">
+        {{catKeys.map((cat) => (
+          <section key={{cat}} ref={{(el) => {{ if (el) categoryRefs.current.set(cat, el); }}}}>
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 capitalize">{{cat}}</h2>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {{categories.get(cat).map((item) => (
+                <ItemCard key={{item.id}} item={{item}} onClick={{() => onSelect(item.id)}} />
+              ))}}
+            </div>
+          </section>
+        ))}}
+      </div>
+    </div>
+  );
+}}
+
+function ItemCard({{ item, onClick }}) {{
+  return (
+    <div
+      className="group cursor-pointer rounded-lg border border-border overflow-hidden hover:border-foreground/30 transition-colors"
+      style={{{{ contentVisibility: "auto", containIntrinsicSize: "auto 200px" }}}}
+      onClick={{onClick}}
+    >
+      <div className="border-b border-border bg-accent/20 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium">{{item.name}}</h3>
+          <span className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">Click to focus →</span>
+        </div>
+        {{item.description && <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">{{item.description}}</p>}}
+      </div>
+      <div className="p-4 min-h-[120px] flex items-center justify-center">
+        <ErrorBoundary name={{item.name}}>
+          <item.Component />
+        </ErrorBoundary>
+      </div>
+    </div>
+  );
+}}
+
+function DetailView({{ id, onBack }}) {{
+  const item = ITEMS.find((i) => i.id === id);
+  if (!item) return <div className="p-6 text-sm text-muted-foreground">Not found.</div>;
+
+  return (
+    <div className="h-screen overflow-hidden">
+      <ErrorBoundary name={{item.name}}>
+        <item.Component />
+      </ErrorBoundary>
+    </div>
+  );
+}}
+
+class ErrorBoundary extends React.Component {{
+  constructor(props) {{
+    super(props);
+    this.state = {{ hasError: false, error: null }};
+  }}
+  static getDerivedStateFromError(error) {{
+    return {{ hasError: true, error: error.message }};
+  }}
+  render() {{
+    if (this.state.hasError) {{
+      return <div className="text-xs text-destructive p-2 text-center">Error rendering {{this.props.name}}: {{this.state.error}}</div>;
+    }}
+    return this.props.children;
+  }}
+}}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode><CatalogApp /></React.StrictMode>
+);
+"##,
+        imports = imports,
+        items_js = items_js,
+    )
+}
+
+fn generate_catalog_main_vue(entries: &[&CatalogEntry], catalog_name: &str) -> String {
+    let alias = if catalog_name == "components" { "@components" } else { "@layouts" };
+
+    // Build import statements
+    let mut imports = String::new();
+    for e in entries {
+        imports.push_str(&format!(
+            "import {ident}Example from \"{alias}/{id}/{file}\";\n",
+            ident = e.ident,
+            alias = alias,
+            id = e.id,
+            file = e.example_file,
+        ));
+    }
+
+    let mut items_js = String::new();
+    for e in entries {
+        let desc_escaped = e.description.replace('\\', "\\\\").replace('"', "\\\"");
+        let name_escaped = e.name.replace('\\', "\\\\").replace('"', "\\\"");
+        let cat_escaped = e.category.replace('\\', "\\\\").replace('"', "\\\"");
+        items_js.push_str(&format!(
+            "  {{ id: \"{id}\", name: \"{name}\", category: \"{cat}\", description: \"{desc}\", component: {ident}Example }},\n",
+            id = e.id, name = name_escaped, cat = cat_escaped, desc = desc_escaped, ident = e.ident,
+        ));
+    }
+
+    format!(
+        r##"import {{ createApp, ref, watch, onMounted, onUnmounted, h, defineComponent }} from "vue";
+import "@/globals.css";
+
+{imports}
+const ITEMS = [
+{items_js}];
+
+const CatalogApp = defineComponent({{
+  setup() {{
+    const view = ref("catalog");
+    const selectedId = ref(null);
+
+    function onHashChange() {{
+      const hash = window.location.hash;
+      if (hash.startsWith("#detail/")) {{
+        selectedId.value = hash.slice("#detail/".length);
+        view.value = "detail";
+      }} else {{
+        view.value = "catalog";
+        selectedId.value = null;
+      }}
+    }}
+
+    function handleMessage(e) {{
+      if (e.data?.type === "navigate-catalog") {{
+        window.location.hash = "";
+      }}
+    }}
+
+    onMounted(() => {{
+      window.addEventListener("hashchange", onHashChange);
+      window.addEventListener("message", handleMessage);
+      onHashChange();
+    }});
+    onUnmounted(() => {{
+      window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener("message", handleMessage);
+    }});
+
+    // Notify parent of navigation changes (for fit-to-height scaling)
+    watch([view, selectedId], ([v, id]) => {{
+      window.parent.postMessage({{ type: "catalog-navigation", view: v, selectedId: id }}, "*");
+    }}, {{ immediate: true }});
+
+    return () => {{
+      if (view.value === "detail" && selectedId.value) {{
+        const item = ITEMS.find((i) => i.id === selectedId.value);
+        if (!item) return h("div", {{ class: "p-6 text-sm text-muted-foreground" }}, "Not found.");
+        return h("div", {{ class: "h-screen overflow-hidden" }}, [h(item.component)]);
+      }}
+
+      const categories = new Map();
+      for (const item of ITEMS) {{
+        const cat = item.category || "general";
+        if (!categories.has(cat)) categories.set(cat, []);
+        categories.get(cat).push(item);
+      }}
+      const catKeys = [...categories.keys()].sort();
+
+      return h("div", {{ class: "min-h-screen" }}, [
+        catKeys.length > 1 ? h("nav", {{ class: "sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur px-6 py-2 flex gap-2 overflow-x-auto" }},
+          catKeys.map((cat) => h("button", {{ class: "shrink-0 rounded-md px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors capitalize", onClick: () => document.getElementById("cat-" + cat)?.scrollIntoView({{ behavior: "smooth" }}) }}, `${{cat}} (${{categories.get(cat).length}})`))
+        ) : null,
+        h("div", {{ class: "p-6 space-y-10" }},
+          catKeys.map((cat) => h("section", {{ id: "cat-" + cat, key: cat }}, [
+            h("h2", {{ class: "text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 capitalize" }}, cat),
+            h("div", {{ class: "grid grid-cols-1 gap-4 lg:grid-cols-2" }},
+              categories.get(cat).map((item) => h("div", {{
+                class: "group cursor-pointer rounded-lg border border-border overflow-hidden hover:border-foreground/30 transition-colors",
+                onClick: () => {{ window.location.hash = `#detail/${{item.id}}`; }}
+              }}, [
+                h("div", {{ class: "border-b border-border bg-accent/20 px-4 py-3" }}, [
+                  h("h3", {{ class: "text-sm font-medium" }}, item.name),
+                  item.description ? h("p", {{ class: "mt-0.5 text-xs text-muted-foreground" }}, item.description) : null,
+                ]),
+                h("div", {{ class: "p-4 min-h-[120px] flex items-center justify-center" }}, [h(item.component)]),
+              ]))
+            ),
+          ]))
+        ),
+      ]);
+    }};
+  }},
+}});
+
+createApp(CatalogApp).mount("#app");
+"##,
+        imports = imports,
+        items_js = items_js,
+    )
 }
 
 /// Update project.json

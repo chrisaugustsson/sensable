@@ -230,9 +230,10 @@ export function useAgentEvents() {
         const contextKey = approvalContextKey(p.featureId);
         const { autoAcceptRules, respondToApproval } = store();
 
-        // Never auto-accept execute_command for safety
+        // Never auto-accept execute_command or submit_plan for safety
         const isCommand = p.toolName.includes("execute_command");
-        if (!isCommand && autoAcceptRules.has(p.toolName)) {
+        const isPlan = p.toolName === "submit_plan";
+        if (!isCommand && !isPlan && autoAcceptRules.has(p.toolName)) {
           await respondToApproval(p.requestId, true);
           return;
         }
@@ -245,7 +246,7 @@ export function useAgentEvents() {
           artifactType: p.artifactType,
           title: p.title,
           preview: p.preview,
-          action: p.action as "create" | "update" | "delete" | "transition",
+          action: p.action as "create" | "update" | "delete" | "transition" | "plan",
           existing: p.existing,
         });
 

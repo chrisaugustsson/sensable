@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { Feature, FeaturePhaseName } from "@sensable/schemas";
 import {
   useProjectStore,
@@ -102,16 +102,100 @@ function FeatureBadges({ featureId }: { featureId: string }) {
   );
 }
 
+function ConfirmDeleteDialog({
+  name,
+  onConfirm,
+  onCancel,
+}: {
+  name: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="mx-4 w-full max-w-sm rounded-lg border border-border bg-background p-4 shadow-lg">
+        <p className="text-sm font-medium">Delete "{name}"?</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          This will permanently remove all associated files.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-md bg-destructive px-3 py-1.5 text-xs text-destructive-foreground transition-colors hover:bg-destructive/90"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContextMenu({
+  x,
+  y,
+  onDelete,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handler = () => onClose();
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed z-50 min-w-[120px] rounded-md border border-border bg-background py-1 shadow-lg"
+      style={{ left: x, top: y }}
+    >
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-accent"
+      >
+        <svg
+          className="h-3 w-3"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M2 4h12M5.33 4V2.67a1.33 1.33 0 011.34-1.34h2.66a1.33 1.33 0 011.34 1.34V4m2 0v9.33a1.33 1.33 0 01-1.34 1.34H4.67a1.33 1.33 0 01-1.34-1.34V4h9.34z" />
+        </svg>
+        Delete
+      </button>
+    </div>
+  );
+}
+
 export function PipelineSidebar() {
   const project = useProjectStore((s) => s.project);
   const setView = useProjectStore((s) => s.setView);
   const createFeature = useProjectStore((s) => s.createFeature);
+  const deleteFeature = useProjectStore((s) => s.deleteFeature);
   const closeProject = useProjectStore((s) => s.closeProject);
 
   const [featuresExpanded, setFeaturesExpanded] = useState(true);
   const [isAddingFeature, setIsAddingFeature] = useState(false);
   const [newFeatureName, setNewFeatureName] = useState("");
   const [newFeatureDesc, setNewFeatureDesc] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; featureId: string; featureName: string } | null>(null);
 
   const currentView = project?.currentView;
   const isAppView = currentView?.type === "app";
@@ -126,6 +210,19 @@ export function PipelineSidebar() {
     setNewFeatureDesc("");
     setIsAddingFeature(false);
   }
+
+  const handleDeleteFeature = useCallback(async (featureId: string) => {
+    // Stop any active agent for this feature
+    const agentStore = useAgentStore.getState();
+    const contextKey = `feature:${featureId}`;
+    const session = getSessionState(agentStore.sessions, contextKey);
+    if (session.status !== "offline") {
+      await agentStore.resetSession(contextKey);
+    }
+    await deleteFeature(featureId);
+    setConfirmDelete(null);
+    setContextMenu(null);
+  }, [deleteFeature]);
 
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-border">
@@ -240,28 +337,56 @@ export function PipelineSidebar() {
 
                 {/* Feature list */}
                 {project?.features.map((feature) => (
-                  <button
+                  <div
                     key={feature.id}
-                    onClick={() =>
-                      setView({
-                        type: "feature",
-                        featureId: feature.id,
-                        phase: feature.currentPhase as FeaturePhaseName,
-                      })
-                    }
-                    className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors ${
-                      selectedFeatureId === feature.id
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
-                    }`}
+                    className="group relative"
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setContextMenu({ x: e.clientX, y: e.clientY, featureId: feature.id, featureName: feature.name });
+                    }}
                   >
-                    <span className="min-w-0 flex-1 truncate">{feature.name}</span>
-                    <FeatureBadges featureId={feature.id} />
-                    <FeatureAgentDot featureId={feature.id} />
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {featureStatusLabel(feature)}
-                    </span>
-                  </button>
+                    <button
+                      onClick={() =>
+                        setView({
+                          type: "feature",
+                          featureId: feature.id,
+                          phase: feature.currentPhase as FeaturePhaseName,
+                        })
+                      }
+                      className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors ${
+                        selectedFeatureId === feature.id
+                          ? "bg-accent text-accent-foreground"
+                          : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{feature.name}</span>
+                      <FeatureBadges featureId={feature.id} />
+                      <FeatureAgentDot featureId={feature.id} />
+                      <span className="shrink-0 text-[10px] text-muted-foreground group-hover:hidden">
+                        {featureStatusLabel(feature)}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDelete({ id: feature.id, name: feature.name });
+                        }}
+                        className="hidden shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/20 hover:text-destructive group-hover:block"
+                        title="Delete feature"
+                      >
+                        <svg
+                          className="h-3 w-3"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M2 4h12M5.33 4V2.67a1.33 1.33 0 011.34-1.34h2.66a1.33 1.33 0 011.34 1.34V4m2 0v9.33a1.33 1.33 0 01-1.34 1.34H4.67a1.33 1.33 0 01-1.34-1.34V4h9.34z" />
+                        </svg>
+                      </button>
+                    </button>
+                  </div>
                 ))}
 
                 {project && project.features.length === 0 && !isAddingFeature && (
@@ -335,9 +460,53 @@ export function PipelineSidebar() {
         </nav>
       </div>
 
-      {/* Close project button */}
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onDelete={() => {
+            setConfirmDelete({ id: contextMenu.featureId, name: contextMenu.featureName });
+            setContextMenu(null);
+          }}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* Confirm delete dialog */}
+      {confirmDelete && (
+        <ConfirmDeleteDialog
+          name={confirmDelete.name}
+          onConfirm={() => handleDeleteFeature(confirmDelete.id)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {/* Bottom actions */}
       {project && (
-        <div className="border-t border-border p-3">
+        <div className="border-t border-border p-3 space-y-0.5">
+          <button
+            onClick={() => setView({ type: "app", view: "settings" })}
+            className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs transition-colors ${
+              appViewName === "settings"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            }`}
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M8 10a2 2 0 100-4 2 2 0 000 4z" />
+              <path d="M13.4 10a1.2 1.2 0 00.24 1.32l.04.04a1.44 1.44 0 11-2.04 2.04l-.04-.04a1.2 1.2 0 00-1.32-.24 1.2 1.2 0 00-.72 1.08v.12a1.44 1.44 0 11-2.88 0v-.06a1.2 1.2 0 00-.78-1.08 1.2 1.2 0 00-1.32.24l-.04.04a1.44 1.44 0 11-2.04-2.04l.04-.04a1.2 1.2 0 00.24-1.32 1.2 1.2 0 00-1.08-.72H1.44a1.44 1.44 0 110-2.88h.06a1.2 1.2 0 001.08-.78 1.2 1.2 0 00-.24-1.32l-.04-.04a1.44 1.44 0 112.04-2.04l.04.04a1.2 1.2 0 001.32.24h.06a1.2 1.2 0 00.72-1.08V1.44a1.44 1.44 0 112.88 0v.06a1.2 1.2 0 00.72 1.08 1.2 1.2 0 001.32-.24l.04-.04a1.44 1.44 0 112.04 2.04l-.04.04a1.2 1.2 0 00-.24 1.32v.06a1.2 1.2 0 001.08.72h.12a1.44 1.44 0 110 2.88h-.06a1.2 1.2 0 00-1.08.72z" />
+            </svg>
+            Settings
+          </button>
           <button
             onClick={closeProject}
             className="w-full rounded-md px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"

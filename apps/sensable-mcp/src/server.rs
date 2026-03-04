@@ -177,6 +177,14 @@ pub struct SaveMemoryParams {
     content: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct SubmitPlanParams {
+    /// Title for the plan
+    title: String,
+    /// Markdown content of the plan (may include mermaid code blocks for diagrams)
+    content: String,
+}
+
 #[tool_router]
 impl SensableMcpServer {
     pub fn new(project_path: String, approval_port: Option<u16>) -> Self {
@@ -1569,6 +1577,47 @@ impl SensableMcpServer {
             "Memory saved to .sensable/{}",
             relative
         ))]))
+    }
+
+    #[tool(
+        name = "submit_plan",
+        description = "Submit a plan for user review and approval. The plan content is markdown and may include mermaid code blocks for diagrams. The user will see the rendered plan in a dialog and can approve or reject it with feedback. Use this before starting implementation to get user buy-in on your approach."
+    )]
+    async fn submit_plan(
+        &self,
+        params: Parameters<SubmitPlanParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let params = params.0;
+
+        let approval = self
+            .request_approval(ApprovalRequest {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                tool_name: "submit_plan".to_string(),
+                phase: self.agent_context.phase.clone().unwrap_or_default(),
+                artifact_type: "plan".to_string(),
+                title: params.title.clone(),
+                preview: serde_json::json!({
+                    "content": params.content,
+                }),
+                action: "plan".to_string(),
+                existing: None,
+                feature_id: self.agent_context.feature_id.clone(),
+            })
+            .await?;
+
+        if !approval.approved {
+            let reason = approval
+                .reason
+                .unwrap_or_else(|| "User rejected the plan".to_string());
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Plan rejected: {}",
+                reason
+            ))]));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            "Plan approved. Proceed with implementation.",
+        )]))
     }
 
     #[tool(

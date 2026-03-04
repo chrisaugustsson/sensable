@@ -1,13 +1,16 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type { DesignSystemComponent, DesignSystemLayout } from "@sensable/schemas";
 import { useProjectStore } from "../stores/project-store";
 import {
   readDesignSystemTokens,
   syncDesignSystem,
+  deleteLayout,
+  deleteComponent,
   getPrototypeServerStatus,
   setupPrototypeServer,
   startPrototypeServer,
   stopPrototypeServer,
+  reinstallPrototypeServer,
   type PrototypeServerStatus,
 } from "../lib/tauri";
 
@@ -107,6 +110,18 @@ export function DesignSystemContent() {
     syncDesignSystem(projectPath).catch(() => {});
   }, [projectPath]);
 
+  const handleDeleteLayout = useCallback(async (id: string) => {
+    if (!projectPath) return;
+    const updated = await deleteLayout(projectPath, id);
+    useProjectStore.setState({ project: updated });
+  }, [projectPath]);
+
+  const handleDeleteComponent = useCallback(async (id: string) => {
+    if (!projectPath) return;
+    const updated = await deleteComponent(projectPath, id);
+    useProjectStore.setState({ project: updated });
+  }, [projectPath]);
+
   const ds = project?.designSystem;
   const components = ds?.components ?? [];
   const layouts = ds?.layouts ?? [];
@@ -143,14 +158,22 @@ export function DesignSystemContent() {
         </div>
       </div>
 
-      {/* Tab content — scrollable area */}
-      <div className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+      {/* Tab content — flex container; each tab manages its own scrolling */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {activeTab === "tokens" && <TokensViewer />}
         {activeTab === "components" && (
-          <GalleryViewer items={components} type="components" />
+          <CatalogViewer
+            items={components}
+            type="components"
+            onDeleteItem={handleDeleteComponent}
+          />
         )}
         {activeTab === "layouts" && (
-          <GalleryViewer items={layouts} type="layouts" />
+          <CatalogViewer
+            items={layouts}
+            type="layouts"
+            onDeleteItem={handleDeleteLayout}
+          />
         )}
       </div>
     </div>
@@ -197,7 +220,7 @@ function TokensViewer() {
   }
 
   return (
-    <div className="space-y-8 p-6">
+    <div className="scrollbar-thin min-h-0 flex-1 overflow-auto space-y-8 p-6">
       {/* Colors */}
       {tokens.colors.length > 0 && (
         <section>
@@ -352,12 +375,14 @@ function TokenTable({ label, tokens }: { label: string; tokens: TokenEntry[] }) 
   );
 }
 
-function GalleryViewer({
+function CatalogViewer({
   items,
   type,
+  onDeleteItem,
 }: {
   items: DesignSystemComponent[] | DesignSystemLayout[];
   type: "components" | "layouts";
+  onDeleteItem: (id: string) => Promise<void>;
 }) {
   const projectPath = useProjectStore((s) => s.projectPath);
   const project = useProjectStore((s) => s.project);
@@ -365,9 +390,49 @@ function GalleryViewer({
   const [loading, setLoading] = useState(true);
   const [settingUp, setSettingUp] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [reinstalling, setReinstalling] = useState(false);
   const [iframeKey, setIframeKey] = useState(0);
   const [deviceSize, setDeviceSize] = useState<DeviceSize>("desktop");
+  const [manageOpen, setManageOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
+  const [catalogContext, setCatalogContext] = useState<{
+    view: "catalog" | "detail";
+    selectedId: string | null;
+  }>({ view: "catalog", selectedId: null });
+  const manageRef = useRef<HTMLDivElement>(null);
+
+  // Listen for catalog navigation events from iframe
+  useEffect(() => {
+    function handleMessage(e: MessageEvent) {
+      if (e.data?.type === "catalog-navigation") {
+        setCatalogContext({
+          view: e.data.view,
+          selectedId: e.data.selectedId,
+        });
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  // Close manage dropdown on click outside
+  useEffect(() => {
+    if (!manageOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (manageRef.current && !manageRef.current.contains(e.target as Node)) {
+        setManageOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [manageOpen]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!confirmDelete) return;
+    await onDeleteItem(confirmDelete.id);
+    setConfirmDelete(null);
+    setIframeKey((k) => k + 1);
+  }, [confirmDelete, onDeleteItem]);
 
   useEffect(() => {
     if (!projectPath) return;
@@ -417,7 +482,25 @@ function GalleryViewer({
     }
   }, [projectPath]);
 
-  // Empty state
+  const handleReinstall = useCallback(async () => {
+    if (!projectPath) return;
+    setReinstalling(true);
+    try {
+      const framework = project?.framework ?? "react";
+      await reinstallPrototypeServer(projectPath, framework);
+      const newStatus = await getPrototypeServerStatus(projectPath);
+      setStatus(newStatus);
+    } catch (e) {
+      console.error("Failed to reinstall prototype server:", e);
+    } finally {
+      setReinstalling(false);
+    }
+  }, [projectPath, project?.framework]);
+
+  const hasAnyExample = items.some((item) => item.hasExample);
+  const typeLabel = type === "components" ? "components" : "layouts";
+
+  // Empty state: no items at all
   if (items.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-8">
@@ -430,105 +513,180 @@ function GalleryViewer({
     );
   }
 
-  const selectedItem = items.find((item) => item.id === selectedId);
+  // Items exist but none have examples
+  if (!hasAnyExample) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center p-8">
+        <p className="max-w-sm text-center text-sm text-muted-foreground">
+          {typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} exist but none have preview examples yet. Ask the agent to create example files.
+        </p>
+      </div>
+    );
+  }
 
-  return (
-    <div className="flex flex-1 overflow-hidden">
-      {/* Item list */}
-      <div className="w-56 shrink-0 overflow-auto border-r border-border">
-        <div className="p-2 space-y-0.5">
-          {items.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => {
-                setSelectedId(item.id);
-                setIframeKey((k) => k + 1);
-              }}
-              className={`flex w-full flex-col rounded-md px-3 py-2 text-left transition-colors ${
-                selectedId === item.id
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
-              }`}
-            >
-              <span className="text-sm font-medium">{item.name}</span>
-              {"category" in item && (
-                <span className="text-[10px] text-muted-foreground">
-                  {(item as DesignSystemComponent).category}
-                </span>
-              )}
-              {item.description && (
-                <span className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                  {item.description}
-                </span>
-              )}
-            </button>
-          ))}
+  // Server checks
+  if (loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-xs text-muted-foreground">Checking prototype server...</p>
+      </div>
+    );
+  }
+
+  if (!status?.setup) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <div className="text-center">
+          <p className="text-sm text-muted-foreground">
+            Set up the prototype server to preview {typeLabel}.
+          </p>
+          <button
+            onClick={handleSetup}
+            disabled={settingUp}
+            className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            {settingUp ? "Setting up..." : "Setup Prototype Server"}
+          </button>
         </div>
       </div>
+    );
+  }
 
-      {/* Preview area */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {!selectedItem ? (
-          <div className="flex flex-1 items-center justify-center">
-            <p className="text-sm text-muted-foreground">
-              Select a {type === "components" ? "component" : "layout"} to preview
-            </p>
+  if (!status.running) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <div className="text-center">
+          <p className="text-sm text-muted-foreground">
+            Start the dev server to preview {typeLabel}.
+          </p>
+          <div className="mt-3 flex items-center justify-center gap-2">
+            <button
+              onClick={handleStart}
+              disabled={starting || reinstalling}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            >
+              {starting ? "Starting..." : "Start Server"}
+            </button>
+            <button
+              onClick={handleReinstall}
+              disabled={starting || reinstalling}
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              {reinstalling ? "Reinstalling..." : "Reinstall"}
+            </button>
           </div>
-        ) : !selectedItem.hasExample ? (
-          <div className="flex flex-1 items-center justify-center">
-            <p className="text-sm text-muted-foreground">
-              No preview available. Ask the agent to create an example file for {selectedItem.name}.
-            </p>
-          </div>
-        ) : loading ? (
-          <div className="flex flex-1 items-center justify-center">
-            <p className="text-xs text-muted-foreground">
-              Checking prototype server...
-            </p>
-          </div>
-        ) : !status?.setup ? (
-          <div className="flex flex-1 items-center justify-center">
-            <div className="text-center">
-              <p className="text-sm text-muted-foreground">
-                Set up the prototype server to preview {type}.
-              </p>
-              <button
-                onClick={handleSetup}
-                disabled={settingUp}
-                className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-              >
-                {settingUp ? "Setting up..." : "Setup Prototype Server"}
-              </button>
-            </div>
-          </div>
-        ) : !status.running ? (
-          <div className="flex flex-1 items-center justify-center">
-            <div className="text-center">
-              <p className="text-sm text-muted-foreground">
-                Start the dev server to preview {type}.
-              </p>
-              <button
-                onClick={handleStart}
-                disabled={starting}
-                className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-              >
-                {starting ? "Starting..." : "Start Server"}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <PreviewFrame
-            url={`http://localhost:${status.port}/design-system/${type}/${selectedItem.id}/`}
-            title={selectedItem.name}
-            iframeKey={iframeKey}
-            deviceSize={deviceSize}
-            onDeviceSizeChange={setDeviceSize}
-            onRefresh={() => setIframeKey((k) => k + 1)}
-            onStop={handleStop}
-            port={status.port}
-          />
-        )}
+        </div>
       </div>
+    );
+  }
+
+  // Derive title from catalog navigation context
+  const defaultTitle = type === "components" ? "Component Catalog" : "Layout Catalog";
+  const catalogTitle =
+    catalogContext.view === "detail" && catalogContext.selectedId
+      ? (items.find((item) => item.id === catalogContext.selectedId)?.name ?? defaultTitle)
+      : defaultTitle;
+
+  const catalogUrl = `http://localhost:${status.port}/design-system/${type}-catalog/`;
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <PreviewFrame
+        url={catalogUrl}
+        title={catalogTitle}
+        iframeKey={iframeKey}
+        deviceSize={deviceSize}
+        onDeviceSizeChange={setDeviceSize}
+        fitToHeight={catalogContext.view === "detail"}
+        breadcrumb={catalogContext.view === "detail" ? catalogTitle : null}
+        onBreadcrumbDelete={
+          catalogContext.view === "detail" && catalogContext.selectedId
+            ? () => {
+                const item = items.find((i) => i.id === catalogContext.selectedId);
+                if (item) setConfirmDelete({ id: item.id, name: item.name });
+              }
+            : undefined
+        }
+        onRefresh={() => setIframeKey((k) => k + 1)}
+        onStop={handleStop}
+        onReinstall={handleReinstall}
+        reinstalling={reinstalling}
+        port={status.port}
+        manageButton={
+          <div className="relative" ref={manageRef}>
+            <button
+              onClick={() => setManageOpen(!manageOpen)}
+              className={`rounded-md border border-border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                manageOpen
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+              title={`Manage ${typeLabel}`}
+            >
+              Manage
+            </button>
+            {manageOpen && (
+              <div className="absolute right-0 top-full z-50 mt-1 w-64 max-h-80 overflow-auto rounded-md border border-border bg-background shadow-lg">
+                <div className="p-1">
+                  {items.map((item) => (
+                    <div
+                      key={item.id}
+                      className="group flex items-center justify-between rounded-sm px-2 py-1 hover:bg-accent"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-xs">{item.name}</p>
+                        {"category" in item && (
+                          <p className="truncate text-[10px] text-muted-foreground">
+                            {(item as DesignSystemComponent).category}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDelete({ id: item.id, name: item.name });
+                        }}
+                        className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-destructive/20 hover:text-destructive group-hover:opacity-100"
+                        title={`Delete ${type === "components" ? "component" : "layout"}`}
+                      >
+                        <svg className="h-3 w-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M2 4h12M5.33 4V2.67a1.33 1.33 0 011.34-1.34h2.66a1.33 1.33 0 011.34 1.34V4m2 0v9.33a1.33 1.33 0 01-1.34 1.34H4.67a1.33 1.33 0 01-1.34-1.34V4h9.34z" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        }
+      />
+
+      {/* Confirm delete dialog */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 w-full max-w-sm rounded-lg border border-border bg-background p-4 shadow-lg">
+            <p className="text-sm font-medium">Delete &quot;{confirmDelete.name}&quot;?</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This will permanently remove all associated files.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="rounded-md bg-destructive px-3 py-1.5 text-xs text-destructive-foreground transition-colors hover:bg-destructive/90"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -541,7 +699,13 @@ function PreviewFrame({
   onDeviceSizeChange,
   onRefresh,
   onStop,
+  onReinstall,
+  reinstalling,
   port,
+  manageButton,
+  fitToHeight = false,
+  breadcrumb,
+  onBreadcrumbDelete,
 }: {
   url: string;
   title: string;
@@ -550,8 +714,26 @@ function PreviewFrame({
   onDeviceSizeChange: (size: DeviceSize) => void;
   onRefresh: () => void;
   onStop: () => void;
+  onReinstall: () => void;
+  reinstalling: boolean;
   port: number;
+  manageButton?: React.ReactNode;
+  fitToHeight?: boolean;
+  breadcrumb?: string | null;
+  onBreadcrumbDelete?: () => void;
 }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
+  const toggleTheme = useCallback(() => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "set-theme", theme: next },
+      "*",
+    );
+  }, [theme]);
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Toolbar */}
@@ -591,9 +773,29 @@ function PreviewFrame({
               </button>
             ))}
           </div>
+
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          >
+            {theme === "dark" ? (
+              <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="8" cy="8" r="3" />
+                <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 8.5A6 6 0 0 1 7.5 2 6 6 0 1 0 14 8.5Z" />
+              </svg>
+            )}
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
+          {manageButton}
+
           <a
             href={url}
             target="_blank"
@@ -615,6 +817,15 @@ function PreviewFrame({
           </a>
 
           <button
+            onClick={onReinstall}
+            disabled={reinstalling}
+            className="rounded-md border border-border px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            title="Reinstall dev server"
+          >
+            {reinstalling ? "Reinstalling..." : "Reinstall"}
+          </button>
+
+          <button
             onClick={onStop}
             className="rounded-md bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/20"
           >
@@ -628,13 +839,43 @@ function PreviewFrame({
         </div>
       </div>
 
+      {/* Breadcrumb */}
+      {breadcrumb && (
+        <div className="flex items-center justify-between border-b border-border bg-accent/10 px-3 py-1">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => {
+                iframeRef.current?.contentWindow?.postMessage({ type: "navigate-catalog" }, "*");
+              }}
+              className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Catalog
+            </button>
+            <span className="text-[11px] text-muted-foreground">/</span>
+            <span className="text-[11px] font-medium text-foreground">{breadcrumb}</span>
+          </div>
+          {onBreadcrumbDelete && (
+            <button
+              onClick={onBreadcrumbDelete}
+              className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/20 hover:text-destructive"
+              title="Delete"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 4h12M5.33 4V2.67a1.33 1.33 0 011.34-1.34h2.66a1.33 1.33 0 011.34 1.34V4m2 0v9.33a1.33 1.33 0 01-1.34 1.34H4.67a1.33 1.33 0 01-1.34-1.34V4h9.34z" />
+              </svg>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Iframe */}
-      <div className="flex flex-1 justify-center overflow-auto bg-accent/10">
+      <div className={`flex flex-1 justify-center ${fitToHeight ? "overflow-hidden" : "overflow-auto"}`}>
         <iframe
+          ref={iframeRef}
           key={iframeKey}
           src={url}
           style={{ width: deviceWidths[deviceSize] }}
-          className="h-full min-h-[400px] bg-white"
+          className={fitToHeight ? "h-full" : "h-full min-h-[400px]"}
           title={`Preview: ${title}`}
         />
       </div>

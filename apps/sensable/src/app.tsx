@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { Toaster } from "sonner";
+import { ErrorBoundary } from "./components/error-boundary";
 import { PipelineSidebar } from "./components/pipeline-sidebar";
 import { ContentArea } from "./components/content-area";
 import { AgentPanel } from "./components/agent-panel";
@@ -8,6 +9,7 @@ import { useApprovalToasts } from "./components/approval-toast";
 import { UserQuestionDialog } from "./components/user-question-dialog";
 import { ProjectPicker } from "./components/project-picker";
 import { OnboardingChat } from "./components/onboarding-chat";
+import { PlanDialog } from "./components/plan-dialog";
 import { useProjectStore, useCurrentFeature } from "./stores/project-store";
 import { useAgentStore, deriveContextKey, getSessionState } from "./stores/agent-store";
 import { useAgentEvents } from "./hooks/use-agent-events";
@@ -36,6 +38,7 @@ function FooterStatus() {
       architect: "Architecture",
       build: "Build",
       project: "Project Spec",
+      settings: "Settings",
     };
     return labels[view.view] ?? view.view;
   }
@@ -94,18 +97,28 @@ export function App() {
   const contextKey = deriveContextKey(project);
   const answerQuestion = useAgentStore((s) => s.answerQuestion);
   const setPendingQuestion = useAgentStore((s) => s.setPendingQuestion);
+  const respondToApproval = useAgentStore((s) => s.respondToApproval);
+  const pendingPlan = useAgentStore((s) =>
+    s.pendingApprovals.find((a) => a.action === "plan") ?? null
+  );
 
-  // Find the first session with a pending question (prefer active context)
-  const pendingQuestionEntry = useAgentStore((s) => {
-    // Prefer active session's question first
+  // Find the first session with a pending question (prefer active context).
+  // Select primitive/stable refs separately to avoid creating new objects in the selector
+  // (which causes infinite re-renders with Zustand's Object.is equality check).
+  const pendingQKey = useAgentStore((s) => {
     const active = getSessionState(s.sessions, contextKey);
-    if (active.pendingQuestion) return { contextKey, question: active.pendingQuestion };
-    // Fall back to any session with a question
+    if (active.pendingQuestion) return contextKey;
     for (const [key, session] of Object.entries(s.sessions)) {
-      if (session.pendingQuestion) return { contextKey: key, question: session.pendingQuestion };
+      if (session.pendingQuestion) return key;
     }
     return null;
   });
+  const pendingQuestion = useAgentStore((s) =>
+    pendingQKey ? getSessionState(s.sessions, pendingQKey).pendingQuestion : null
+  );
+  const pendingQuestionEntry = pendingQKey && pendingQuestion
+    ? { contextKey: pendingQKey, question: pendingQuestion }
+    : null;
 
   useAgentEvents();
   useApprovalToasts();
@@ -141,31 +154,37 @@ export function App() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {project ? (
-          showOnboarding ? (
-            <OnboardingChat />
+        <ErrorBoundary>
+          {project ? (
+            showOnboarding ? (
+              <OnboardingChat />
+            ) : (
+              <>
+                <PipelineSidebar />
+                <Group
+                  id="sensable-main"
+                  orientation="horizontal"
+                  defaultLayout={defaultLayout}
+                  onLayoutChanged={onLayoutChanged}
+                >
+                  <Panel id="content" defaultSize="75%" minSize="50%">
+                    <ErrorBoundary>
+                      <ContentArea />
+                    </ErrorBoundary>
+                  </Panel>
+                  <Separator className="w-1 hover:bg-primary/30 transition-colors" />
+                  <Panel id="agent" defaultSize="25%" minSize="15%" maxSize="50%">
+                    <ErrorBoundary>
+                      <AgentPanel />
+                    </ErrorBoundary>
+                  </Panel>
+                </Group>
+              </>
+            )
           ) : (
-            <>
-              <PipelineSidebar />
-              <Group
-                id="sensable-main"
-                orientation="horizontal"
-                defaultLayout={defaultLayout}
-                onLayoutChanged={onLayoutChanged}
-              >
-                <Panel id="content" defaultSize="75%" minSize="50%">
-                  <ContentArea />
-                </Panel>
-                <Separator className="w-1 hover:bg-primary/30 transition-colors" />
-                <Panel id="agent" defaultSize="25%" minSize="15%" maxSize="50%">
-                  <AgentPanel />
-                </Panel>
-              </Group>
-            </>
-          )
-        ) : (
-          <ProjectPicker />
-        )}
+            <ProjectPicker />
+          )}
+        </ErrorBoundary>
       </div>
 
       <footer className="flex h-7 shrink-0 items-center border-t border-border px-4">
@@ -187,6 +206,14 @@ export function App() {
         position="bottom-right"
       />
       <NavigationGuardDialog />
+
+      {pendingPlan && (
+        <PlanDialog
+          approval={pendingPlan}
+          onApprove={(requestId) => respondToApproval(requestId, true)}
+          onReject={(requestId, reason) => respondToApproval(requestId, false, reason)}
+        />
+      )}
     </div>
   );
 }

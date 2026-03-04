@@ -20,6 +20,7 @@ export const appLevelViewNames = [
   "design-system",
   "build",
   "project",
+  "settings",
 ] as const;
 
 export type AppLevelViewName = (typeof appLevelViewNames)[number];

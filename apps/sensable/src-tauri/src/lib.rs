@@ -45,6 +45,8 @@ pub fn run() {
             project::advance_onboarding,
             project::read_design_system_tokens,
             project::sync_design_system,
+            project::delete_layout,
+            project::delete_component,
             project::list_wireframes,
             project::read_wireframe,
             project::choose_wireframe,
@@ -58,6 +60,7 @@ pub fn run() {
             prototype::setup_prototype_server,
             prototype::start_prototype_server,
             prototype::stop_prototype_server,
+            prototype::reinstall_prototype_server,
             prototype::get_prototype_server_status,
         ])
         .run(tauri::generate_context!())

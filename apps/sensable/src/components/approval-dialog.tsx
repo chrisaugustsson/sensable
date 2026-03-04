@@ -52,6 +52,7 @@ export const actionBadgeStyles: Record<string, string> = {
   update: "bg-blue-500/20 text-blue-400",
   delete: "bg-red-500/20 text-red-400",
   transition: "bg-yellow-500/20 text-yellow-400",
+  plan: "bg-blue-500/20 text-blue-400",
 };
 
 export const actionLabels: Record<string, string> = {
@@ -59,6 +60,7 @@ export const actionLabels: Record<string, string> = {
   update: "Update",
   delete: "Delete",
   transition: "Transition",
+  plan: "Plan",
 };
 
 export function PreviewCreate({ preview }: { preview: unknown }) {

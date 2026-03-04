@@ -9,6 +9,7 @@ import { PrototypePreview } from "./prototype-preview";
 import { DeliverContent } from "./deliver-content";
 import { ProjectSpecViewer } from "./project-spec-viewer";
 import { DesignSystemContent } from "./design-system-content";
+import { ProjectSettings } from "./project-settings";
 
 const phaseDescriptions: Record<
   FeaturePhaseName,
@@ -73,6 +74,12 @@ const appViewDescriptions: Record<
     description:
       "Scaffold the application with rich context from every prior phase.",
     hint: "This phase will be available in a future update.",
+  },
+  settings: {
+    title: "Settings",
+    description:
+      "Configure project-level settings like prototype framework and preferences.",
+    hint: "",
   },
 };
 
@@ -148,6 +155,8 @@ export function ContentArea() {
           <ArchitectContent />
         ) : view.view === "design-system" ? (
           <DesignSystemContent />
+        ) : view.view === "settings" ? (
+          <ProjectSettings />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center p-8">
             <p className="max-w-sm text-center text-sm text-muted-foreground">

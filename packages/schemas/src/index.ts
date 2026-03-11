@@ -31,10 +31,12 @@ export {
   insightSchema,
   insightEvidenceSchema,
   opportunityAreaSchema,
+  inspirationSchema,
   type ResearchNote,
   type Interview,
   type Insight,
   type OpportunityArea,
+  type Inspiration,
 } from "./discover";
 
 export {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useProjectStore, useCurrentFeature } from "../stores/project-store";
 import type { FeaturePhaseName } from "@sensable/schemas";
 import { FeatureStepper } from "./feature-stepper";
@@ -10,6 +10,7 @@ import { DeliverContent } from "./deliver-content";
 import { ProjectSpecViewer } from "./project-spec-viewer";
 import { DesignSystemContent } from "./design-system-content";
 import { ProjectSettings } from "./project-settings";
+import { ElementPrompt } from "./element-prompt";
 
 const phaseDescriptions: Record<
   FeaturePhaseName,
@@ -18,20 +19,20 @@ const phaseDescriptions: Record<
   discover: {
     title: "Discover",
     description:
-      "Define what this feature needs. The agent helps you write a spec through guided conversation.",
-    hint: "Ask the agent to help you write a spec for this feature — it will interview you about purpose, users, and key behaviors.",
+      "Explore the problem space. Research, interview users, and gather insights.",
+    hint: "Ask the agent to help you explore the problem — research users, competitors, and the domain.",
   },
   define: {
     title: "Define",
     description:
-      "Explore layout options with wireframes. The agent generates HTML wireframes for review.",
-    hint: "Ask the agent to generate wireframes based on your spec. It will create multiple layout options for you to compare.",
+      "Synthesize your research into a clear feature spec with requirements and constraints.",
+    hint: "Ask the agent to write a spec based on your Discover research.",
   },
   develop: {
     title: "Develop",
     description:
-      "Build interactive prototypes using your design system and components.",
-    hint: "Ask the agent to generate a prototype from your chosen wireframe and design system.",
+      "Explore wireframe layouts, choose one, then build an interactive prototype.",
+    hint: "Ask the agent to generate wireframe options based on your spec.",
   },
   deliver: {
     title: "Deliver",
@@ -90,6 +91,7 @@ const supportingArtifacts: Record<FeaturePhaseName, Array<{ type: string; label:
     { type: "interviews", label: "Interviews" },
     { type: "insights", label: "Insights" },
     { type: "opportunity-areas", label: "Opportunity Areas" },
+    { type: "inspiration", label: "Inspiration" },
   ],
   define: [
     { type: "problem-statements", label: "Problem Statements" },
@@ -240,47 +242,7 @@ function ArchitectContent() {
   );
 }
 
-function DefineContent({
-  featureId,
-  hint,
-}: {
-  featureId: string;
-  hint: string;
-}) {
-  const [hasWireframes, setHasWireframes] = useState(false);
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col p-6">
-      <WireframePreview featureId={featureId} onLoadStatus={setHasWireframes} />
-
-      {!hasWireframes && (
-        <div className="flex flex-1 items-center justify-center">
-          <p className="max-w-sm text-center text-sm text-muted-foreground">
-            {hint}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DevelopContent({
-  featureId,
-  hint,
-}: {
-  featureId: string;
-  hint: string;
-}) {
-  return (
-    <div className="min-h-0 flex-1 overflow-auto p-6">
-      <PrototypePreview featureId={featureId} />
-      <div className="mt-4 text-center text-sm text-muted-foreground">
-        <p className="max-w-sm mx-auto">{hint}</p>
-      </div>
-    </div>
-  );
-}
-
+/** Discover phase: research artifacts are the primary focus */
 function DiscoverContent({
   featureId,
   hint,
@@ -288,16 +250,49 @@ function DiscoverContent({
   featureId: string;
   hint: string;
 }) {
-  const [supportingExpanded, setSupportingExpanded] = useState(false);
   const artifacts = supportingArtifacts.discover;
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto p-6">
+      {/* Primary: Research artifacts */}
+      <div className="space-y-6">
+        {artifacts.map((a) => (
+          <ArtifactList
+            key={a.type}
+            featureId={featureId}
+            phase="discover"
+            artifactType={a.type}
+            label={a.label}
+          />
+        ))}
+      </div>
+
+      {/* Hint */}
+      <div className="mt-4 text-center text-sm text-muted-foreground">
+        <p className="max-w-sm mx-auto">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
+/** Define phase: spec viewer + supporting artifacts (problem statements, requirements, constraints) */
+function DefineContent({
+  featureId,
+  hint,
+}: {
+  featureId: string;
+  hint: string;
+}) {
+  const [supportingExpanded, setSupportingExpanded] = useState(false);
+  const artifacts = supportingArtifacts.define;
 
   return (
     <div className="min-h-0 flex-1 overflow-auto p-6">
       {/* Primary: Spec viewer */}
       <SpecViewer featureId={featureId} />
 
-      {/* Hint when no spec exists yet (SpecViewer returns null) */}
-      <div className="mt-4 text-center text-sm text-muted-foreground empty:hidden" id={`hint-${featureId}`}>
+      {/* Hint when no spec exists yet */}
+      <div className="mt-4 text-center text-sm text-muted-foreground">
         <p className="max-w-sm mx-auto">{hint}</p>
       </div>
 
@@ -319,7 +314,7 @@ function DiscoverContent({
             >
               <path d="M6 4l4 4-4 4" />
             </svg>
-            Supporting Research
+            Supporting Artifacts
           </button>
           {supportingExpanded && (
             <div className="mt-4 space-y-6">
@@ -327,7 +322,7 @@ function DiscoverContent({
                 <ArtifactList
                   key={a.type}
                   featureId={featureId}
-                  phase="discover"
+                  phase="define"
                   artifactType={a.type}
                   label={a.label}
                 />
@@ -336,6 +331,95 @@ function DiscoverContent({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Develop phase: wireframes first, then prototype after one is chosen */
+function DevelopContent({
+  featureId,
+  hint,
+}: {
+  featureId: string;
+  hint: string;
+}) {
+  const [hasWireframes, setHasWireframes] = useState(false);
+  const [wireframeChosen, setWireframeChosen] = useState<boolean>(false);
+  const [subStep, setSubStep] = useState<"wireframes" | "prototype">("wireframes");
+
+  // Auto-advance to prototype when wireframe is chosen
+  useEffect(() => {
+    if (wireframeChosen) setSubStep("prototype");
+  }, [wireframeChosen]);
+
+  const handleChosenStatus = useCallback((isChosen: boolean) => {
+    setWireframeChosen(isChosen);
+  }, []);
+
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col p-6">
+      {/* Sub-step indicator */}
+      {hasWireframes && (
+        <div className="mb-4 flex items-center gap-2">
+          <button
+            onClick={() => setSubStep("wireframes")}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs transition-colors ${
+              subStep === "wireframes"
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {wireframeChosen && (
+              <svg className="h-3 w-3 text-green-400" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 8.5l3.5 3.5 6.5-7" />
+              </svg>
+            )}
+            Wireframes
+          </button>
+          <div className="h-px w-4 bg-border" />
+          <button
+            onClick={() => wireframeChosen && setSubStep("prototype")}
+            disabled={!wireframeChosen}
+            className={`rounded-md px-3 py-1 text-xs transition-colors ${
+              subStep === "prototype"
+                ? "bg-accent text-foreground"
+                : wireframeChosen
+                  ? "text-muted-foreground hover:text-foreground"
+                  : "text-muted-foreground/40 cursor-not-allowed"
+            }`}
+          >
+            Prototype
+          </button>
+        </div>
+      )}
+
+      {subStep === "wireframes" ? (
+        <>
+          <WireframePreview
+            featureId={featureId}
+            onLoadStatus={setHasWireframes}
+            onChosenStatus={handleChosenStatus}
+          />
+          {!hasWireframes && (
+            <div className="flex flex-1 items-center justify-center">
+              <p className="max-w-sm text-center text-sm text-muted-foreground">
+                {hint}
+              </p>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <PrototypePreview featureId={featureId} />
+          <div className="mt-4 text-center text-sm text-muted-foreground">
+            <p className="max-w-sm mx-auto">
+              Ask the agent to generate a prototype from your chosen wireframe and design system.
+            </p>
+          </div>
+        </>
+      )}
+
+      <ElementPrompt />
     </div>
   );
 }

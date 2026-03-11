@@ -16,11 +16,11 @@ export function SpecViewer({ featureId }: SpecViewerProps) {
   useEffect(() => {
     if (!projectPath) return;
     setLoading(true);
-    listArtifacts(projectPath, "discover", "specs", featureId)
+    listArtifacts(projectPath, "define", "specs", featureId)
       .then(async (summaries) => {
         const full = await Promise.all(
           (summaries as Array<{ id: string }>).map((s) =>
-            readArtifact(projectPath, "discover", "specs", s.id, featureId),
+            readArtifact(projectPath, "define", "specs", s.id, featureId),
           ),
         );
         const loaded = full as Spec[];
@@ -84,7 +84,7 @@ export function SpecViewer({ featureId }: SpecViewerProps) {
         </div>
 
         {/* User Stories */}
-        {activeSpec.userStories.length > 0 && (
+        {activeSpec.userStories?.length > 0 && (
           <div className="border-b border-border px-4 py-3">
             <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               User Stories
@@ -108,7 +108,7 @@ export function SpecViewer({ featureId }: SpecViewerProps) {
         )}
 
         {/* Acceptance Criteria */}
-        {activeSpec.acceptanceCriteria.length > 0 && (
+        {activeSpec.acceptanceCriteria?.length > 0 && (
           <div className="border-b border-border px-4 py-3">
             <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Acceptance Criteria
@@ -125,7 +125,7 @@ export function SpecViewer({ featureId }: SpecViewerProps) {
         )}
 
         {/* Out of Scope */}
-        {activeSpec.outOfScope.length > 0 && (
+        {activeSpec.outOfScope?.length > 0 && (
           <div className="border-b border-border px-4 py-3">
             <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Out of Scope
@@ -145,7 +145,7 @@ export function SpecViewer({ featureId }: SpecViewerProps) {
         )}
 
         {/* Open Questions */}
-        {activeSpec.openQuestions.length > 0 && (
+        {activeSpec.openQuestions?.length > 0 && (
           <div className="px-4 py-3">
             <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Open Questions

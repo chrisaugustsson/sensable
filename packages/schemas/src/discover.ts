@@ -57,3 +57,15 @@ export const opportunityAreaSchema = baseArtifactSchema.extend({
 });
 
 export type OpportunityArea = z.infer<typeof opportunityAreaSchema>;
+
+export const inspirationSchema = baseArtifactSchema.extend({
+  title: z.string().min(1),
+  source: z.string(),
+  sourceType: z.enum(["screenshot", "website", "app", "pattern", "other"]),
+  description: z.string(),
+  relevance: z.string(),
+  url: z.string().optional(),
+  createdBy: z.enum(["user", "agent"]),
+});
+
+export type Inspiration = z.infer<typeof inspirationSchema>;

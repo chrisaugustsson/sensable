@@ -221,88 +221,138 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                 "discover" => format!(
                     "You are working on the feature \"{}\".\n\
                     Feature description: {}\n\n\
-                    Your primary goal is to help the user write a **feature spec**.\n\n\
-                    **Spec writing process:**\n\
-                    1. Start by asking about the feature's purpose, target users, and key behaviors\n\
-                    2. Ask clarifying questions — don't make assumptions\n\
-                    3. When you have enough understanding, create a spec using create_artifact with artifact_type=\"specs\"\n\
-                    4. The spec should include:\n\
-                       - **title**: Feature name\n\
-                       - **overview**: What this feature does and why\n\
-                       - **userStories**: Array of {{ asA, iWant, soThat }} objects\n\
-                       - **acceptanceCriteria**: Array of testable criteria\n\
-                       - **outOfScope**: What this feature does NOT include\n\
-                       - **openQuestions**: Unresolved questions to address later\n\
-                       - **status**: Start as \"draft\", move to \"review\" when ready for user review\n\
-                       - **createdBy**: \"agent\"\n\
-                    5. Continue refining based on user feedback until they approve the spec\n\
-                    6. When approved, update the spec status to \"approved\"\n\n\
-                    You can also create supporting research artifacts (research-notes, interviews, insights, opportunity-areas) \
-                    if the user wants to do deeper discovery before writing the spec.\n\n\
-                    **Important:** Use feature_id=\"{}\" in all artifact tool calls.",
-                    feature_name, feature_desc, feature_id
+                    ## Phase: Discover (Diverge)\n\
+                    Your goal is **broad exploration** of the problem space. Help the user research, \
+                    understand users, and gather insights before narrowing down.\n\n\
+                    **This is NOT the phase for writing specs or defining solutions.** That comes in Define.\n\n\
+                    **Research process:**\n\
+                    1. Start by asking open-ended questions about the problem space:\n\
+                       - What problem are you trying to solve?\n\
+                       - Who are the users? What are their goals and frustrations?\n\
+                       - What existing solutions do they use today? What's missing?\n\
+                       - What context or constraints should we be aware of?\n\
+                    2. Use WebSearch to research the domain, competitors, and best practices\n\
+                    3. As the conversation reveals important information, capture it as structured artifacts:\n\
+                       - **Research Notes** (artifact_type=\"research-notes\"): Observations, findings, competitive analysis\n\
+                       - **Interviews** (artifact_type=\"interviews\"): User interview summaries with questions, answers, takeaways\n\
+                       - **Insights** (artifact_type=\"insights\"): Patterns and themes that emerge from research\n\
+                       - **Opportunity Areas** (artifact_type=\"opportunity-areas\"): Promising directions to explore\n\
+                       - **Inspiration** (artifact_type=\"inspiration\"): Screenshots, references, UI patterns, or products that inspire the direction\n\
+                    4. Encourage the user to think broadly — no idea is too wild at this stage\n\n\
+                    **Creating artifacts:**\n\
+                    Use create_artifact with feature_id=\"{}\" and phase=\"discover\".\n\
+                    Each artifact type has its own schema — the fields will be validated automatically.\n\n\
+                    **When to transition:**\n\
+                    The Discover phase is complete when you have a solid understanding of the problem space. \
+                    Specifically, transition when:\n\
+                    - At least 2 research artifacts have been created (research-notes, insights, or opportunity-areas)\n\
+                    - The user's core problem, users, and constraints are clearly understood\n\
+                    - There are enough insights to write a meaningful spec\n\n\
+                    Suggest moving to Define:\n\
+                    \"We've gathered good insights about [summarize key findings]. Ready to synthesize these into a spec in the Define phase?\"\n\
+                    Use transition_phase(feature_id=\"{}\", to_phase=\"define\") when the user agrees.",
+                    feature_name, feature_desc, feature_id, feature_id
                 ),
                 "define" => format!(
                     "You are working on the feature \"{}\".\n\
                     Feature description: {}\n\n\
-                    Your primary goal is to help the user explore layout options with **wireframes**.\n\n\
-                    **Wireframe process:**\n\
-                    1. First, read the feature's spec: use list_artifacts with artifact_type=\"specs\" and then read_artifact\n\
-                    2. Generate 2-3 wireframe options, each representing a different layout approach\n\
-                    3. For EACH option, generate state variants showing different UI states.\n\
-                       Every option MUST have the same set of states for fair comparison.\n\
-                       Common states: default view, item selected, dialog/modal open, empty state, loading, error.\n\
-                       Pick 2-4 relevant states based on the feature's spec.\n\n\
-                    **File naming convention:**\n\
-                    - option-1-default.html — Option 1, default/base state\n\
-                    - option-1-selected.html — Option 1, with an item selected\n\
-                    - option-1-dialog.html — Option 1, with a modal/dialog open\n\
-                    - option-2-default.html — Option 2, default/base state\n\
-                    - option-2-selected.html — Option 2, with an item selected\n\
-                    - option-2-dialog.html — Option 2, with a modal/dialog open\n\
-                    (Adapt variant names to the feature — these are just examples)\n\n\
-                    4. Wireframes must be: grayscale only, system fonts (sans-serif), simple boxes/rectangles, no colors, no images\n\
-                    5. Use write_project_file to save each wireframe to:\n\
-                       .sensable/features/{}/define/wireframes/\n\
-                    6. Each HTML file should be self-contained (inline styles, no external deps)\n\
-                    7. After writing all HTML files, create a manifest.json in the same directory:\n\
-                       ```json\n\
-                       {{\n\
-                         \"options\": [\n\
-                           {{\n\
-                             \"id\": \"option-1\",\n\
-                             \"title\": \"Option 1: [brief layout description]\",\n\
-                             \"status\": \"draft\",\n\
-                             \"variants\": [\n\
-                               {{ \"file\": \"option-1-default.html\", \"label\": \"Default\", \"description\": \"Base state with list view\" }},\n\
-                               {{ \"file\": \"option-1-selected.html\", \"label\": \"Selected\", \"description\": \"A row is selected showing details\" }}\n\
-                             ]\n\
-                           }}\n\
-                         ],\n\
-                         \"chosenOption\": null\n\
-                       }}\n\
-                       ```\n\
-                    8. After generating, explain the tradeoffs of each option\n\n\
-                    **Important:** Each option must have a CONSISTENT base layout — variants only differ in UI state, not layout.\n\n\
-                    **Important:** Use feature_id=\"{}\" in all artifact tool calls for structured artifacts.",
-                    feature_name, feature_desc, feature_id, feature_id
+                    ## Phase: Define (Converge)\n\
+                    Your goal is to **synthesize research into a clear feature specification**.\n\n\
+                    **First, read existing research from the Discover phase:**\n\
+                    Use list_artifacts(feature_id=\"{}\", phase=\"discover\", artifact_type=\"research-notes\") \
+                    and similar for \"interviews\", \"insights\", \"opportunity-areas\", \"inspiration\". Read the full content of each.\n\n\
+                    **Spec writing process:**\n\
+                    1. Review all Discover-phase research artifacts to build context\n\
+                    2. Ask focused questions to resolve ambiguities and fill gaps\n\
+                    3. When you have enough understanding, create a spec using create_artifact:\n\
+                       - phase=\"define\", artifact_type=\"specs\"\n\
+                       - The spec should include:\n\
+                         - **title**: Feature name\n\
+                         - **overview**: What this feature does and why\n\
+                         - **userStories**: Array of {{ asA, iWant, soThat }} objects\n\
+                         - **acceptanceCriteria**: Array of testable criteria\n\
+                         - **outOfScope**: What this feature does NOT include\n\
+                         - **openQuestions**: Unresolved questions to address later\n\
+                         - **status**: Start as \"draft\", move to \"review\" when ready for user review\n\
+                         - **createdBy**: \"agent\"\n\
+                    4. Continue refining based on user feedback until they approve the spec\n\
+                    5. When approved, update the spec status to \"approved\"\n\n\
+                    **You can also create supporting Define artifacts:**\n\
+                    - Problem Statements (artifact_type=\"problem-statements\"): Crisp problem definitions\n\
+                    - Requirements (artifact_type=\"requirements\"): Functional and non-functional requirements\n\
+                    - Constraints (artifact_type=\"constraints\"): Technical, business, user, or regulatory constraints\n\n\
+                    **When to transition:**\n\
+                    The Define phase is complete when the spec has been explicitly approved by the user. \
+                    Specifically:\n\
+                    - A spec artifact exists with all required fields filled in\n\
+                    - The user has reviewed the spec and confirmed it's correct\n\
+                    - You have updated the spec status to \"approved\" via update_artifact\n\n\
+                    After the spec is approved, suggest moving to Develop:\n\
+                    \"Spec approved! Ready to explore wireframe layouts in the Develop phase?\"\n\
+                    Use transition_phase(feature_id=\"{}\", to_phase=\"develop\") when the user agrees.\n\n\
+                    **Important:** Use feature_id=\"{}\" in all artifact tool calls.",
+                    feature_name, feature_desc, feature_id, feature_id, feature_id
                 ),
                 "develop" => {
                     let fw = project.framework.as_deref().unwrap_or("react");
                     format!(
                         "You are working on the feature \"{}\".\n\
                         Feature description: {}\n\n\
-                        Your primary goal is to help build **interactive prototypes**.\n\n\
+                        ## Phase: Develop (Diverge then Converge)\n\
+                        This phase has two steps: first explore wireframe options (diverge), \
+                        then build a prototype from the chosen one (converge).\n\n\
+                        **First, check your current step:**\n\
+                        Read .sensable/features/{}/develop/wireframes/manifest.json using read_project_file.\n\n\
+                        ---\n\n\
+                        ### If manifest doesn't exist or chosenOption is null: WIREFRAME MODE\n\n\
+                        **Read the spec first:**\n\
+                        Use list_artifacts(feature_id=\"{}\", phase=\"define\", artifact_type=\"specs\") then read_artifact.\n\n\
+                        **Wireframe process:**\n\
+                        1. Generate 2-3 wireframe options, each representing a different layout approach\n\
+                        2. For EACH option, generate state variants showing different UI states.\n\
+                           Every option MUST have the same set of states for fair comparison.\n\
+                           Common states: default view, item selected, dialog/modal open, empty state, loading, error.\n\
+                           Pick 2-4 relevant states based on the feature's spec.\n\n\
+                        **File naming convention:**\n\
+                        - option-1-default.html, option-1-selected.html, option-1-dialog.html\n\
+                        - option-2-default.html, option-2-selected.html, option-2-dialog.html\n\
+                        (Adapt variant names to the feature)\n\n\
+                        3. Wireframes must be: grayscale only, system fonts (sans-serif), simple boxes/rectangles, no colors, no images\n\
+                        4. Use write_project_file to save each wireframe to:\n\
+                           .sensable/features/{}/develop/wireframes/\n\
+                        5. Each HTML file should be self-contained (inline styles, no external deps)\n\
+                        6. After writing all HTML files, create a manifest.json in the same directory:\n\
+                           ```json\n\
+                           {{\n\
+                             \"options\": [\n\
+                               {{\n\
+                                 \"id\": \"option-1\",\n\
+                                 \"title\": \"Option 1: [brief layout description]\",\n\
+                                 \"status\": \"draft\",\n\
+                                 \"variants\": [\n\
+                                   {{ \"file\": \"option-1-default.html\", \"label\": \"Default\", \"description\": \"Base state\" }},\n\
+                                   {{ \"file\": \"option-1-selected.html\", \"label\": \"Selected\", \"description\": \"Item selected\" }}\n\
+                                 ]\n\
+                               }}\n\
+                             ],\n\
+                             \"chosenOption\": null\n\
+                           }}\n\
+                           ```\n\
+                        7. After generating, explain the tradeoffs of each option\n\n\
+                        **Important:** Each option must have a CONSISTENT base layout — variants only differ in UI state, not layout.\n\n\
+                        The user will choose a wireframe via the UI. When they send a message like \
+                        \"I've chosen wireframe X\", acknowledge their choice and proceed to prototype mode.\n\n\
+                        ---\n\n\
+                        ### If chosenOption is set: PROTOTYPE MODE\n\n\
                         **Project framework:** {}\n\n\
                         **Setup:** If the prototype server hasn't been set up yet, tell the user to click \
                         \"Setup Prototype Server\" in the Develop panel before you can generate prototypes.\n\n\
                         **Prototype process:**\n\
-                        1. Read the chosen wireframe from .sensable/features/{}/define/wireframes/ \
-                           (use read_project_file to read manifest.json — find the chosenOption id, then read the default variant HTML file for that option)\n\
-                        2. Read design system tokens from .sensable/design-system/tokens.css \
-                           (use read_project_file)\n\
+                        1. Read the chosen wireframe from .sensable/features/{}/develop/wireframes/ \
+                           (read manifest.json — find the chosenOption id, then read the default variant HTML file)\n\
+                        2. Read design system tokens from .sensable/design-system/tokens.css\n\
                         3. Generate a {} prototype with these files using write_project_file:\n\
-                           a. .sensable/prototype-server/features/{}/index.html — entry HTML:\n\
+                           a. .sensable/features/{}/prototype/index.html — entry HTML:\n\
                               ```html\n\
                               <!DOCTYPE html>\n\
                               <html lang=\"en\">\n\
@@ -318,13 +368,13 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                               </body>\n\
                               </html>\n\
                               ```\n\
-                           b. .sensable/prototype-server/features/{}/main.tsx — React entry:\n\
+                           b. .sensable/features/{}/prototype/main.tsx — React entry:\n\
                               ```tsx\n\
                               import {{ createRoot }} from \"react-dom/client\";\n\
                               import App from \"./App\";\n\
                               createRoot(document.getElementById(\"root\")!).render(<App />);\n\
                               ```\n\
-                           c. .sensable/prototype-server/features/{}/App.tsx — the actual prototype component\n\
+                           c. .sensable/features/{}/prototype/App.tsx — the actual prototype component\n\
                         4. The prototype should be interactive (state, transitions, animations) but use mocked data\n\
                         5. Use CSS custom properties from the design system tokens for colors, typography, spacing\n\
                         6. Use Tailwind CSS utility classes for layout and styling\n\
@@ -335,9 +385,17 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                         - If reusable components exist, import them via: import {{ ComponentName }} from '@components/{{id}}/{{ComponentName}}'\n\
                         - Check what's available: use list_project_files(\".sensable/design-system/layouts\") and list_project_files(\".sensable/design-system/components\")\n\
                         - Using shared layouts means changing the layout source updates ALL prototypes automatically\n\n\
+                        ---\n\n\
+                        ### When to transition\n\
+                        When the prototype is complete and the user has reviewed it in the preview:\n\
+                        - Confirm the prototype matches the spec and chosen wireframe layout\n\
+                        - Ask: \"The prototype looks good! Ready to implement this feature in your actual codebase? \
+                          I'll move us to the Deliver phase.\"\n\
+                        - When the user agrees, call transition_phase(feature_id=\"{}\", to_phase=\"deliver\")\n\n\
                         **Important:** Use feature_id=\"{}\" in all artifact tool calls.",
-                        feature_name, feature_desc, fw, feature_id, fw,
-                        feature_id, feature_id, feature_id, feature_id
+                        feature_name, feature_desc,
+                        feature_id, feature_id, feature_id,
+                        fw, feature_id, fw, feature_id, feature_id, feature_id, feature_id, feature_id
                     )
                 }
                 "deliver" => {
@@ -350,13 +408,13 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                         **Project framework:** {}\n\n\
                         **Follow these steps in order:**\n\n\
                         **Step 1: Gather context from prior phases**\n\
-                        - Read the approved spec: use list_artifacts(feature_id=\"{}\", phase=\"discover\", \
+                        - Read the approved spec: use list_artifacts(feature_id=\"{}\", phase=\"define\", \
                           artifact_type=\"specs\") then read_artifact to get the full spec details\n\
                         - Read the chosen wireframe: use read_project_file to read \
-                          .sensable/features/{}/define/wireframes/manifest.json, \
+                          .sensable/features/{}/develop/wireframes/manifest.json, \
                           find the chosenOption id, then read the default variant HTML file for that option\n\
                         - Read the prototype code: use list_project_files then read_project_file to read files from \
-                          .sensable/prototype-server/features/{}/ (App.tsx and any other components)\n\
+                          .sensable/features/{}/prototype/ (App.tsx and any other components)\n\
                         - Read design system tokens: use read_project_file to read \
                           .sensable/design-system/tokens.css\n\n\
                         **Step 2: Explore the real codebase**\n\
@@ -391,6 +449,14 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                           - data containing: title, summary, filesCreated (array of paths), \
                             filesModified (array of paths), dependenciesAdded (array), \
                             decisions (array of key decisions made during implementation)\n\n\
+                        **When this phase is complete:**\n\
+                        The Deliver phase is complete when:\n\
+                        - All planned files have been created/modified\n\
+                        - The build passes without errors\n\
+                        - An implementation-notes artifact has been created documenting the changes\n\
+                        - The user has confirmed the implementation looks correct\n\n\
+                        Once everything is verified, congratulate the user — this feature has gone through \
+                        the full pipeline from discovery to implementation!\n\n\
                         **Important guidelines:**\n\
                         - Never modify files inside .sensable/ — that's the design workspace, not the real codebase\n\
                         - Match the prototype's UI but implement real business logic\n\
@@ -625,7 +691,7 @@ Returns all features with id, name, currentPhase, and phase statuses.
 Lists all artifacts of a given type within a phase. Returns an array of {{id, title}}.
 - feature_id: UUID of the feature (required for discover/define/develop/deliver phases, omit for architect/build)
 - phase: "discover" | "define" | "develop" | "deliver" | "architect" | "build"
-- artifact_type: e.g. "specs", "research-notes", "interviews", "insights", "opportunity-areas", "problem-statements", "requirements", "constraints"
+- artifact_type: e.g. "specs", "research-notes", "interviews", "insights", "opportunity-areas", "inspiration", "problem-statements", "requirements", "constraints"
 
 #### read_artifact(feature_id?, phase, artifact_type, id)
 Reads the full JSON content of a specific artifact by its UUID.
@@ -676,6 +742,15 @@ Writes a file to the project folder (requires approval).
 
 #### execute_command(command, args?, working_directory?)
 Executes a shell command in the project folder (requires approval).
+
+## CRITICAL: Workspace Boundary Rule
+**You must ONLY write files inside the `.sensable/` directory.** This is the Sensable design workspace.
+- ALL wireframes, prototypes, design system files, specs, and artifacts go inside `.sensable/`
+- NEVER create or modify files in the project's source directories (e.g. `src/`, `app/`, `lib/`, `public/`, `pages/`, etc.)
+- NEVER modify project config files (e.g. `package.json`, `tsconfig.json`, `tailwind.config.*`, `vite.config.*`, etc.)
+- The ONLY exception is the **Deliver phase**, where you implement features in the real codebase
+- If you are not in the Deliver phase, every `write_project_file` call MUST target a path starting with `.sensable/`
+- You may READ project source files to understand patterns, but do NOT write to them unless in Deliver phase
 
 ## Guidelines
 - Use artifact tools for structured project data (research notes, insights, requirements)
@@ -787,6 +862,19 @@ pub async fn stop_agent(
     context_key: String,
 ) -> Result<(), String> {
     state.stop(&context_key).await
+}
+
+/// Stop an agent and clear its stored session ID so the next start
+/// gets a fresh Claude session with the latest system prompt.
+/// Used after phase transitions where the old prompt is stale.
+#[tauri::command]
+pub async fn reset_agent_session(
+    state: tauri::State<'_, AgentRegistry>,
+    context_key: String,
+) -> Result<(), String> {
+    state.stop(&context_key).await?;
+    state.clear_session(&context_key).await;
+    Ok(())
 }
 
 #[tauri::command]

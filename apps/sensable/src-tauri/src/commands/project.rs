@@ -102,7 +102,7 @@ pub struct Project {
 }
 
 fn default_schema_version() -> u32 {
-    2
+    3
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -134,16 +134,15 @@ fn artifact_base_dir(project_path: &str, feature_id: Option<&str>, phase: &str) 
 fn create_feature_dirs(sensable: &Path, feature_id: &str) -> Result<(), String> {
     let feature_dir = sensable.join("features").join(feature_id);
     let dirs = [
-        "discover/specs",
         "discover/research-notes",
         "discover/interviews",
         "discover/insights",
         "discover/opportunity-areas",
+        "define/specs",
         "define/problem-statements",
         "define/requirements",
         "define/constraints",
-        "define/wireframes",
-        "develop",
+        "develop/wireframes",
         "deliver/implementation-notes",
     ];
     for dir in &dirs {
@@ -249,7 +248,7 @@ fn migrate_v1_to_v2(project_path: &str) -> Result<Project, String> {
         description,
         created_at,
         updated_at: now,
-        schema_version: 2,
+        schema_version: 3,
         current_view: CurrentView::App {
             view: "overview".to_string(),
         },
@@ -312,7 +311,7 @@ pub fn create_project(name: String, description: String, path: String) -> Result
         description,
         created_at: now.clone(),
         updated_at: now,
-        schema_version: 2,
+        schema_version: 3,
         current_view: CurrentView::App {
             view: "overview".to_string(),
         },
@@ -335,7 +334,67 @@ pub fn create_project(name: String, description: String, path: String) -> Result
     Ok(project)
 }
 
-/// Open an existing .sensable project (with v1→v2 migration)
+/// Migrate a v2 project to v3 format (Double Diamond realignment).
+/// Moves specs from discover/ to define/, wireframes from define/ to develop/.
+fn migrate_v2_to_v3(path: &str) -> Result<Project, String> {
+    let sensable = sensable_dir(path);
+    let json_path = project_json_path(path);
+
+    let contents =
+        fs::read_to_string(&json_path).map_err(|e| format!("Failed to read project.json: {}", e))?;
+    let mut project: Project =
+        serde_json::from_str(&contents).map_err(|e| format!("Invalid project.json: {}", e))?;
+
+    // Migrate each feature's directory structure
+    for feature in &project.features {
+        let feature_dir = sensable.join("features").join(&feature.id);
+
+        // Move discover/specs/ → define/specs/
+        let old_specs = feature_dir.join("discover").join("specs");
+        let new_specs = feature_dir.join("define").join("specs");
+        if old_specs.exists() {
+            let _ = fs::create_dir_all(&new_specs);
+            if let Ok(entries) = fs::read_dir(&old_specs) {
+                for entry in entries.flatten() {
+                    let dest = new_specs.join(entry.file_name());
+                    let _ = fs::rename(entry.path(), dest);
+                }
+            }
+            let _ = fs::remove_dir(&old_specs); // Remove if empty
+        } else {
+            let _ = fs::create_dir_all(&new_specs);
+        }
+
+        // Move define/wireframes/ → develop/wireframes/
+        let old_wireframes = feature_dir.join("define").join("wireframes");
+        let new_wireframes = feature_dir.join("develop").join("wireframes");
+        if old_wireframes.exists() {
+            let _ = fs::create_dir_all(&new_wireframes);
+            if let Ok(entries) = fs::read_dir(&old_wireframes) {
+                for entry in entries.flatten() {
+                    let dest = new_wireframes.join(entry.file_name());
+                    let _ = fs::rename(entry.path(), dest);
+                }
+            }
+            let _ = fs::remove_dir(&old_wireframes); // Remove if empty
+        } else {
+            let _ = fs::create_dir_all(&new_wireframes);
+        }
+    }
+
+    // Bump schema version
+    project.schema_version = 3;
+    project.updated_at = chrono::Utc::now().to_rfc3339();
+
+    let json = serde_json::to_string_pretty(&project)
+        .map_err(|e| format!("Failed to serialize project: {}", e))?;
+    fs::write(&json_path, json)
+        .map_err(|e| format!("Failed to write project.json: {}", e))?;
+
+    Ok(project)
+}
+
+/// Open an existing .sensable project (with v1→v2→v3 migration)
 #[tauri::command]
 pub fn open_project(path: String) -> Result<Project, String> {
     let project_path = project_json_path(&path);
@@ -353,8 +412,18 @@ pub fn open_project(path: String) -> Result<Project, String> {
     let has_schema_version = raw.get("schemaVersion").is_some();
 
     if !has_schema_version {
-        // v1 project — migrate
-        return migrate_v1_to_v2(&path);
+        // v1 project — migrate v1→v2→v3
+        let _ = migrate_v1_to_v2(&path)?;
+        return migrate_v2_to_v3(&path);
+    }
+
+    let schema_version = raw
+        .get("schemaVersion")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3) as u32;
+
+    if schema_version <= 2 {
+        return migrate_v2_to_v3(&path);
     }
 
     let project: Project =
@@ -691,7 +760,7 @@ fn wireframes_dir(project_path: &str, feature_id: &str) -> PathBuf {
     sensable_dir(project_path)
         .join("features")
         .join(feature_id)
-        .join("define")
+        .join("develop")
         .join("wireframes")
 }
 
@@ -1155,6 +1224,137 @@ pub fn delete_component(project_path: String, component_id: String) -> Result<Pr
 
     // Re-sync to update project.json
     sync_design_system(project_path)
+}
+
+#[derive(Debug, Serialize)]
+pub struct FeatureReference {
+    #[serde(rename = "featureId")]
+    pub feature_id: String,
+    #[serde(rename = "featureName")]
+    pub feature_name: String,
+    pub files: Vec<String>,
+}
+
+/// Check if a design system item (layout or component) is referenced by any feature prototypes.
+#[tauri::command]
+pub fn check_design_system_references(
+    project_path: String,
+    item_type: String,
+    item_id: String,
+) -> Result<Vec<FeatureReference>, String> {
+    let sensable = sensable_dir(&project_path);
+    let features_dir = sensable.join("features");
+
+    if !features_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    // Load project to get feature names
+    let json_path = project_json_path(&project_path);
+    let project: Project = serde_json::from_str(
+        &fs::read_to_string(&json_path)
+            .map_err(|e| format!("Failed to read project.json: {}", e))?,
+    )
+    .map_err(|e| format!("Failed to parse project.json: {}", e))?;
+
+    let feature_map: HashMap<String, String> = project
+        .features
+        .iter()
+        .map(|f| (f.id.clone(), f.name.clone()))
+        .collect();
+
+    let mut references = Vec::new();
+
+    let feature_entries = fs::read_dir(&features_dir)
+        .map_err(|e| format!("Failed to read features dir: {}", e))?;
+
+    for entry in feature_entries.flatten() {
+        let feature_dir = entry.path();
+        if !feature_dir.is_dir() {
+            continue;
+        }
+
+        let feature_id = match feature_dir.file_name() {
+            Some(name) => name.to_string_lossy().to_string(),
+            None => continue,
+        };
+
+        let mut matching_files = Vec::new();
+
+        // Scan prototype files (develop/prototypes/)
+        let proto_dir = feature_dir.join("develop").join("prototypes");
+        if proto_dir.exists() {
+            scan_dir_for_references(&proto_dir, &item_type, &item_id, &feature_dir, &mut matching_files);
+        }
+
+        // Scan wireframe files (develop/wireframes/)
+        let wire_dir = feature_dir.join("develop").join("wireframes");
+        if wire_dir.exists() {
+            scan_dir_for_references(&wire_dir, &item_type, &item_id, &feature_dir, &mut matching_files);
+        }
+
+        if !matching_files.is_empty() {
+            let feature_name = feature_map
+                .get(&feature_id)
+                .cloned()
+                .unwrap_or_else(|| feature_id.clone());
+            references.push(FeatureReference {
+                feature_id,
+                feature_name,
+                files: matching_files,
+            });
+        }
+    }
+
+    Ok(references)
+}
+
+/// Recursively scan a directory for files that reference a design system item.
+fn scan_dir_for_references(
+    dir: &Path,
+    item_type: &str,
+    item_id: &str,
+    feature_dir: &Path,
+    results: &mut Vec<String>,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_dir_for_references(&path, item_type, item_id, feature_dir, results);
+            continue;
+        }
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "tsx" | "ts" | "jsx" | "vue" | "html") {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Check for imports/references to this item:
+        // e.g. @layouts/main-layout, @components/button, layouts/main-layout, components/button
+        let patterns = [
+            format!("@{}/{}", item_type, item_id),
+            format!("{}/{}", item_type, item_id),
+        ];
+
+        if patterns.iter().any(|p| content.contains(p)) {
+            let relative = path
+                .strip_prefix(feature_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            results.push(relative);
+        }
+    }
 }
 
 /// Convert a kebab-case ID to a PascalCase identifier for JS imports.

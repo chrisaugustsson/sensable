@@ -583,6 +583,40 @@ impl SensableMcpServer {
         Ok(())
     }
 
+    /// Validate that writes stay inside `.sensable/` unless the agent is in the deliver phase.
+    /// This prevents agents from accidentally modifying real project source files.
+    fn validate_sensable_scope(&self, resolved_path: &std::path::Path) -> Result<(), McpError> {
+        // Only enforce when we know the context (phase is set)
+        let phase = match self.agent_context.phase.as_deref() {
+            Some(p) => p,
+            None => return Ok(()), // No phase info — don't enforce (backward compat)
+        };
+
+        // Deliver phase is allowed to write outside .sensable/
+        if phase == "deliver" {
+            return Ok(());
+        }
+
+        let sensable_dir = self.sensable_dir();
+        let canon_sensable = match sensable_dir.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return Ok(()), // .sensable doesn't exist yet, let init create it
+        };
+
+        if !resolved_path.starts_with(&canon_sensable) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "Workspace boundary violation: in the '{}' phase, you may only write files inside .sensable/. \
+                     To modify project source files, the feature must be in the Deliver phase.",
+                    phase
+                ),
+                None,
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Validate that an artifact operation's feature_id matches this agent's context.
     /// When SENSABLE_FEATURE_ID is set, operations targeting a different feature are rejected.
     fn validate_artifact_feature_id(&self, param_feature_id: Option<&str>) -> Result<(), McpError> {
@@ -702,6 +736,7 @@ impl SensableMcpServer {
         let params = params.0;
         let path = self.resolve_safe_path(&params.path)?;
         self.validate_feature_scope(&path)?;
+        self.validate_sensable_scope(&path)?;
 
         let is_update = path.exists();
 
@@ -929,6 +964,7 @@ impl SensableMcpServer {
             "discover/interviews",
             "discover/insights",
             "discover/opportunity-areas",
+            "discover/inspiration",
             "define/problem-statements",
             "define/requirements",
             "define/constraints",
@@ -1322,6 +1358,27 @@ impl SensableMcpServer {
             ))]));
         }
 
+        // Enforce sequential phase order for features
+        if feature_id.is_some() {
+            let phase_order = ["discover", "define", "develop", "deliver"];
+            let current_idx = phase_order.iter().position(|p| *p == current_phase);
+            let target_idx = phase_order.iter().position(|p| *p == to_phase);
+            if let (Some(ci), Some(ti)) = (current_idx, target_idx) {
+                if ti != ci + 1 {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "Cannot transition from {} to {} — phases must go in order: discover → define → develop → deliver. The next phase after {} is {}.",
+                            current_phase,
+                            to_phase,
+                            current_phase,
+                            phase_order.get(ci + 1).unwrap_or(&"(none)")
+                        ),
+                        None,
+                    ));
+                }
+            }
+        }
+
         let preview = serde_json::json!({
             "currentPhase": current_phase,
             "targetPhase": to_phase,
@@ -1381,6 +1438,16 @@ impl SensableMcpServer {
                         );
                     }
                 }
+            }
+
+            // Auto-navigate: update currentView to the new phase so the UI follows
+            if let Some(obj) = project.as_object_mut() {
+                let new_view = serde_json::json!({
+                    "type": "feature",
+                    "featureId": fid,
+                    "phase": to_phase
+                });
+                obj.insert("currentView".to_string(), new_view);
             }
         } else {
             // Transition app-level phase

@@ -21,7 +21,7 @@ export function DeliverContent({ featureId, hint }: DeliverContentProps) {
         emptyHint={hint}
       />
 
-      {/* Reference: Spec from Discover phase — collapsible */}
+      {/* Reference: Spec from Define phase — collapsible */}
       <div className="mt-6 border-t border-border pt-4">
         <button
           onClick={() => setReferenceExpanded((v) => !v)}

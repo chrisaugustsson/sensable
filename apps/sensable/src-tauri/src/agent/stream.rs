@@ -1,4 +1,4 @@
-use super::types::AgentEvent;
+use super::types::{AgentEvent, UsageData};
 
 /// Parse a single line of Claude CLI stream-json output into an AgentEvent.
 ///
@@ -104,9 +104,47 @@ fn parse_result_event(json: &serde_json::Value) -> Option<AgentEvent> {
                 .and_then(|r| r.as_str())
                 .unwrap_or("")
                 .to_string();
+
+            // Log the full result event for debugging token availability
+            eprintln!("[sensable] result event: {}", json);
+
+            // Extract token usage data.
+            // Try nested `usage` object first, then fall back to top-level fields.
+            let usage_obj = json.get("usage");
+            let input_tokens = usage_obj
+                .and_then(|u| u.get("input_tokens"))
+                .or_else(|| json.get("input_tokens"))
+                .and_then(|v| v.as_u64());
+            let output_tokens = usage_obj
+                .and_then(|u| u.get("output_tokens"))
+                .or_else(|| json.get("output_tokens"))
+                .and_then(|v| v.as_u64());
+
+            let usage = match (input_tokens, output_tokens) {
+                (Some(input), Some(output)) => Some(UsageData {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_creation_input_tokens: usage_obj
+                        .and_then(|u| u.get("cache_creation_input_tokens"))
+                        .or_else(|| json.get("cache_creation_input_tokens"))
+                        .and_then(|v| v.as_u64()),
+                    cache_read_input_tokens: usage_obj
+                        .and_then(|u| u.get("cache_read_input_tokens"))
+                        .or_else(|| json.get("cache_read_input_tokens"))
+                        .and_then(|v| v.as_u64()),
+                    num_turns: json.get("num_turns").and_then(|v| v.as_u64()),
+                    total_cost_usd: json
+                        .get("total_cost_usd")
+                        .or_else(|| json.get("cost_usd"))
+                        .and_then(|v| v.as_f64()),
+                }),
+                _ => None,
+            };
+
             Some(AgentEvent::MessageEnd {
                 session_id,
                 result_text,
+                usage,
             })
         }
         "error" => {
@@ -166,14 +204,61 @@ mod tests {
 
     #[test]
     fn test_parse_result_success() {
-        let line = r#"{"type":"result","subtype":"success","session_id":"abc-123","result":"Done","cost_usd":0.01,"duration_ms":5000}"#;
+        let line = r#"{"type":"result","subtype":"success","session_id":"abc-123","result":"Done","total_cost_usd":0.01,"duration_ms":5000,"num_turns":2,"usage":{"input_tokens":15000,"output_tokens":500,"cache_creation_input_tokens":1000,"cache_read_input_tokens":5000}}"#;
         match parse_stream_line(line) {
             Some(AgentEvent::MessageEnd {
                 session_id,
                 result_text,
+                usage,
             }) => {
                 assert_eq!(session_id, "abc-123");
                 assert_eq!(result_text, "Done");
+                let usage = usage.expect("usage should be present");
+                assert_eq!(usage.input_tokens, 15000);
+                assert_eq!(usage.output_tokens, 500);
+                assert_eq!(usage.cache_creation_input_tokens, Some(1000));
+                assert_eq!(usage.cache_read_input_tokens, Some(5000));
+                assert_eq!(usage.num_turns, Some(2));
+                assert_eq!(usage.total_cost_usd, Some(0.01));
+            }
+            other => panic!("Expected MessageEnd, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_result_success_top_level_tokens() {
+        // Some CLI versions put tokens at the top level instead of nested in `usage`
+        let line = r#"{"type":"result","subtype":"success","session_id":"abc-123","result":"Done","input_tokens":90000,"output_tokens":2000,"cost_usd":0.05,"num_turns":3}"#;
+        match parse_stream_line(line) {
+            Some(AgentEvent::MessageEnd {
+                session_id,
+                result_text,
+                usage,
+            }) => {
+                assert_eq!(session_id, "abc-123");
+                assert_eq!(result_text, "Done");
+                let usage = usage.expect("usage should be present from top-level fields");
+                assert_eq!(usage.input_tokens, 90000);
+                assert_eq!(usage.output_tokens, 2000);
+                assert_eq!(usage.num_turns, Some(3));
+                assert_eq!(usage.total_cost_usd, Some(0.05));
+            }
+            other => panic!("Expected MessageEnd, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_result_success_without_usage() {
+        let line = r#"{"type":"result","subtype":"success","session_id":"abc-123","result":"Done"}"#;
+        match parse_stream_line(line) {
+            Some(AgentEvent::MessageEnd {
+                session_id,
+                result_text,
+                usage,
+            }) => {
+                assert_eq!(session_id, "abc-123");
+                assert_eq!(result_text, "Done");
+                assert!(usage.is_none());
             }
             other => panic!("Expected MessageEnd, got {:?}", other),
         }

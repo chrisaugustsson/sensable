@@ -15,6 +15,18 @@ pub struct Question {
     pub multi_select: Option<bool>,
 }
 
+/// Token usage data from a Claude CLI result event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageData {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: Option<u64>,
+    pub cache_read_input_tokens: Option<u64>,
+    pub num_turns: Option<u64>,
+    pub total_cost_usd: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum AgentEvent {
@@ -53,6 +65,8 @@ pub enum AgentEvent {
         session_id: String,
         /// Fallback: full response text from the result event
         result_text: String,
+        /// Token usage from the CLI result event
+        usage: Option<UsageData>,
     },
     Error {
         message: String,

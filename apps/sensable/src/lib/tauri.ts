@@ -128,6 +128,24 @@ export async function deleteComponent(
   return invoke("delete_component", { projectPath, componentId });
 }
 
+export interface FeatureReference {
+  featureId: string;
+  featureName: string;
+  files: string[];
+}
+
+export async function checkDesignSystemReferences(
+  projectPath: string,
+  itemType: string,
+  itemId: string,
+): Promise<FeatureReference[]> {
+  return invoke("check_design_system_references", {
+    projectPath,
+    itemType,
+    itemId,
+  });
+}
+
 export async function syncDesignSystem(
   projectPath: string,
 ): Promise<Project> {
@@ -249,6 +267,11 @@ export async function sendAgentMessage(
 
 export async function stopAgent(contextKey: string): Promise<void> {
   return invoke("stop_agent", { contextKey });
+}
+
+/** Stop an agent and clear its session ID so the next start gets a fresh session. */
+export async function resetAgentSession(contextKey: string): Promise<void> {
+  return invoke("reset_agent_session", { contextKey });
 }
 
 export async function getAgentStatus(contextKey: string): Promise<string> {

@@ -5,6 +5,7 @@ import { MessageBubble } from "./chat/message-bubble";
 import { StatusBadge } from "./chat/status-badge";
 import { ChatInput } from "./chat/chat-input";
 import { ThinkingIndicator } from "./chat/thinking-indicator";
+import { ContextUsage } from "./chat/context-usage";
 
 function hasActiveTextStreaming(messages: AgentMessage[]): boolean {
   const last = messages[messages.length - 1];
@@ -42,7 +43,7 @@ export function AgentPanel() {
   const contextLabel = useContextLabel();
 
   const session = useAgentStore((s) => getSessionState(s.sessions, contextKey));
-  const { messages, status, error } = session;
+  const { messages, status, error, usage } = session;
   const sendMessage = useAgentStore((s) => s.sendMessage);
   const stopAgent = useAgentStore((s) => s.stopAgent);
   const resetSession = useAgentStore((s) => s.resetSession);
@@ -54,7 +55,7 @@ export function AgentPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const isBusy = status === "thinking" || status === "starting";
+  const isBusy = status === "thinking" || status === "starting" || session.needsPhaseRestart;
   const showThinking = status === "thinking" && !hasActiveTextStreaming(messages);
 
   return (
@@ -69,6 +70,7 @@ export function AgentPanel() {
               {contextLabel}
             </span>
           )}
+          <ContextUsage usage={usage} messages={messages} />
         </div>
         <div className="flex items-center gap-2">
           {autoAcceptRules.size > 0 && (

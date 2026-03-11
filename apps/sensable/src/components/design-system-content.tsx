@@ -6,6 +6,8 @@ import {
   syncDesignSystem,
   deleteLayout,
   deleteComponent,
+  checkDesignSystemReferences,
+  type FeatureReference,
   getPrototypeServerStatus,
   setupPrototypeServer,
   startPrototypeServer,
@@ -394,7 +396,7 @@ function CatalogViewer({
   const [iframeKey, setIframeKey] = useState(0);
   const [deviceSize, setDeviceSize] = useState<DeviceSize>("desktop");
   const [manageOpen, setManageOpen] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string; references: FeatureReference[] } | null>(null);
   const [catalogContext, setCatalogContext] = useState<{
     view: "catalog" | "detail";
     selectedId: string | null;
@@ -426,6 +428,12 @@ function CatalogViewer({
     window.addEventListener("mousedown", handler);
     return () => window.removeEventListener("mousedown", handler);
   }, [manageOpen]);
+
+  const promptDelete = useCallback(async (id: string, name: string) => {
+    if (!projectPath) return;
+    const refs = await checkDesignSystemReferences(projectPath, type, id).catch(() => []);
+    setConfirmDelete({ id, name, references: refs });
+  }, [projectPath, type]);
 
   const handleConfirmDelete = useCallback(async () => {
     if (!confirmDelete) return;
@@ -603,7 +611,7 @@ function CatalogViewer({
           catalogContext.view === "detail" && catalogContext.selectedId
             ? () => {
                 const item = items.find((i) => i.id === catalogContext.selectedId);
-                if (item) setConfirmDelete({ id: item.id, name: item.name });
+                if (item) promptDelete(item.id, item.name);
               }
             : undefined
         }
@@ -644,7 +652,7 @@ function CatalogViewer({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setConfirmDelete({ id: item.id, name: item.name });
+                          promptDelete(item.id, item.name);
                         }}
                         className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-all hover:bg-destructive/20 hover:text-destructive group-hover:opacity-100"
                         title={`Delete ${type === "components" ? "component" : "layout"}`}
@@ -667,9 +675,27 @@ function CatalogViewer({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="mx-4 w-full max-w-sm rounded-lg border border-border bg-background p-4 shadow-lg">
             <p className="text-sm font-medium">Delete &quot;{confirmDelete.name}&quot;?</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              This will permanently remove all associated files.
-            </p>
+            {confirmDelete.references.length > 0 ? (
+              <div className="mt-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2">
+                <p className="text-xs font-medium text-yellow-400">
+                  Used by {confirmDelete.references.length} feature{confirmDelete.references.length > 1 ? "s" : ""}:
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {confirmDelete.references.map((ref) => (
+                    <li key={ref.featureId} className="text-xs text-muted-foreground">
+                      &bull; {ref.featureName}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  Deleting this will break these feature prototypes.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-1 text-xs text-muted-foreground">
+                This will permanently remove all associated files.
+              </p>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 onClick={() => setConfirmDelete(null)}
@@ -681,7 +707,7 @@ function CatalogViewer({
                 onClick={handleConfirmDelete}
                 className="rounded-md bg-destructive px-3 py-1.5 text-xs text-destructive-foreground transition-colors hover:bg-destructive/90"
               >
-                Delete
+                {confirmDelete.references.length > 0 ? "Delete Anyway" : "Delete"}
               </button>
             </div>
           </div>
@@ -730,6 +756,13 @@ function PreviewFrame({
     setTheme(next);
     iframeRef.current?.contentWindow?.postMessage(
       { type: "set-theme", theme: next },
+      "*",
+    );
+  }, [theme]);
+
+  const handleIframeLoad = useCallback(() => {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "set-theme", theme },
       "*",
     );
   }, [theme]);
@@ -874,6 +907,7 @@ function PreviewFrame({
           ref={iframeRef}
           key={iframeKey}
           src={url}
+          onLoad={handleIframeLoad}
           style={{ width: deviceWidths[deviceSize] }}
           className={fitToHeight ? "h-full" : "h-full min-h-[400px]"}
           title={`Preview: ${title}`}

@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { useAgentStore, deriveContextKey, type AgentStatusType } from "../stores/agent-store";
+import { useAgentStore, deriveContextKey, getSessionState, type AgentStatusType, type UsageData } from "../stores/agent-store";
 import { useProjectStore } from "../stores/project-store";
 import * as tauri from "../lib/tauri";
 
@@ -31,6 +31,7 @@ interface MessageEndPayload extends ScopedPayload {
   type: "message-end";
   session_id: string;
   result_text: string;
+  usage?: UsageData;
 }
 
 interface ErrorPayload extends ScopedPayload {
@@ -167,18 +168,37 @@ export function useAgentEvents() {
     );
 
     unlisteners.push(
-      listen<MessageEndPayload>("agent:message-end", (event) => {
+      listen<MessageEndPayload>("agent:message-end", async (event) => {
         const key = event.payload.context_key;
+        console.log("[sensable] message-end payload:", JSON.stringify(event.payload, null, 2));
+
         store().setSessionId(key, event.payload.session_id);
         store().endMessage(key);
         store().setStatus(key, "running");
 
+        // Track context window usage
+        if (event.payload.usage) {
+          store().setUsage(key, event.payload.usage);
+        }
+
         // Re-read project from disk to pick up any changes (e.g. advance_onboarding, new artifacts)
         const projectPath = useProjectStore.getState().projectPath;
         if (projectPath) {
-          tauri.openProject(projectPath).then((project) => {
+          try {
+            const project = await tauri.openProject(projectPath);
             useProjectStore.setState({ project });
-          }).catch(console.error);
+          } catch (e) {
+            console.error("Failed to re-read project:", e);
+          }
+        }
+
+        // Check if a phase transition was approved during this turn.
+        // By now project.json is guaranteed written by the MCP server.
+        const session = getSessionState(store().sessions, key);
+        if (session.needsPhaseRestart) {
+          await store().handlePhaseTransition(key);
+          useProjectStore.getState().bumpFileWriteVersion();
+          return; // Skip notification — session is being torn down
         }
 
         // Notify if this is a background context (not currently active)
@@ -196,11 +216,27 @@ export function useAgentEvents() {
     );
 
     unlisteners.push(
-      listen<ErrorPayload>("agent:error", (event) => {
+      listen<ErrorPayload>("agent:error", async (event) => {
         const key = event.payload.context_key;
         store().setError(key, event.payload.message);
         store().endMessage(key);
         store().setStatus(key, "error");
+
+        // If a phase transition was pending, still handle it
+        const session = getSessionState(store().sessions, key);
+        if (session.needsPhaseRestart) {
+          await store().handlePhaseTransition(key);
+          const projectPath = useProjectStore.getState().projectPath;
+          if (projectPath) {
+            try {
+              const project = await tauri.openProject(projectPath);
+              useProjectStore.setState({ project });
+            } catch (e) {
+              console.error("Failed to re-read project after error:", e);
+            }
+          }
+          useProjectStore.getState().bumpFileWriteVersion();
+        }
       }),
     );
 
@@ -234,7 +270,7 @@ export function useAgentEvents() {
         const isCommand = p.toolName.includes("execute_command");
         const isPlan = p.toolName === "submit_plan";
         if (!isCommand && !isPlan && autoAcceptRules.has(p.toolName)) {
-          await respondToApproval(p.requestId, true);
+          await respondToApproval(p.requestId, true, undefined, p.toolName);
           return;
         }
 

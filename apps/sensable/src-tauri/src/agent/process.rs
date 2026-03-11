@@ -377,6 +377,7 @@ impl AgentRegistry {
                                 AgentEvent::MessageEnd {
                                     session_id,
                                     result_text,
+                                    usage: _usage,
                                 } => {
                                     // Use accumulated streaming text, or fall back to result text
                                     let final_text = if full_text.is_empty() {
@@ -630,7 +631,7 @@ impl AgentRegistry {
     }
 
     /// Clear the stored session ID for a context (for "new session" functionality).
-    #[allow(dead_code)]
+    /// Used after phase transitions to ensure the next start gets a fresh Claude session.
     pub async fn clear_session(&self, key: &str) {
         let instances = self.instances.lock().await;
         if let Some(entry) = instances.get(key) {

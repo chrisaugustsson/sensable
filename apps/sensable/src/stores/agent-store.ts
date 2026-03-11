@@ -14,6 +14,12 @@ export interface ContentBlock {
   toolInput?: unknown;
 }
 
+export interface ElementReference {
+  tag: string;
+  selector: string;
+  outerHTML: string;
+}
+
 export interface AgentMessage {
   id: string;
   role: "user" | "assistant";
@@ -23,6 +29,7 @@ export interface AgentMessage {
   isStreaming?: boolean;
   toolCalls?: { name: string; input: unknown }[];
   images?: MessageImage[];
+  elementRef?: ElementReference;
 }
 
 export interface PendingApproval {
@@ -56,6 +63,16 @@ export interface PendingUserQuestion {
 
 export type AgentStatusType = "offline" | "starting" | "running" | "thinking" | "error";
 
+/** Token usage data from a Claude CLI result event. */
+export interface UsageData {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  numTurns?: number;
+  totalCostUsd?: number;
+}
+
 /** Per-agent session state, keyed by context key. */
 export interface AgentSessionState {
   messages: AgentMessage[];
@@ -64,6 +81,10 @@ export interface AgentSessionState {
   sessionId: string | null;
   error: string | null;
   pendingQuestion: PendingUserQuestion | null;
+  /** Latest usage data — updated after each agent turn. */
+  usage: UsageData | null;
+  /** Set when transition_phase is approved; cleared by message-end handler to trigger session restart. */
+  needsPhaseRestart: boolean;
 }
 
 const defaultSessionState: AgentSessionState = {
@@ -73,6 +94,8 @@ const defaultSessionState: AgentSessionState = {
   sessionId: null,
   error: null,
   pendingQuestion: null,
+  usage: null,
+  needsPhaseRestart: false,
 };
 
 /** Derive a context key from the current project state. */
@@ -127,6 +150,7 @@ interface AgentState {
   setError: (contextKey: string, error: string | null) => void;
   addToolCall: (contextKey: string, name: string, input: unknown) => void;
   endMessage: (contextKey: string) => void;
+  setUsage: (contextKey: string, usage: UsageData) => void;
   clearMessages: (contextKey: string) => void;
   resetSession: (contextKey: string) => Promise<void>;
   resetAll: () => Promise<void>;
@@ -134,7 +158,7 @@ interface AgentState {
   // Approval actions
   addPendingApproval: (approval: PendingApproval) => void;
   removePendingApproval: (requestId: string) => void;
-  respondToApproval: (requestId: string, approved: boolean, reason?: string) => Promise<void>;
+  respondToApproval: (requestId: string, approved: boolean, reason?: string, toolName?: string) => Promise<void>;
 
   // Question actions
   setPendingQuestion: (contextKey: string, question: PendingUserQuestion | null) => void;
@@ -143,6 +167,10 @@ interface AgentState {
   // Auto-accept
   addAutoAcceptRule: (toolName: string) => void;
   clearAutoAcceptRules: () => void;
+
+  // Phase transition
+  markNeedsPhaseRestart: (contextKey: string) => void;
+  handlePhaseTransition: (contextKey: string) => Promise<void>;
 
   // Unread tracking
   markUnread: (contextKey: string) => void;
@@ -293,6 +321,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     );
   },
 
+  setUsage: (contextKey, usage) => {
+    set((s) => updateSession(s, contextKey, () => ({ usage })));
+  },
+
   setSessionId: (contextKey, id) => {
     set((s) => updateSession(s, contextKey, () => ({ sessionId: id })));
   },
@@ -357,6 +389,33 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     });
   },
 
+  markNeedsPhaseRestart: (contextKey) => {
+    set((s) => updateSession(s, contextKey, () => ({ needsPhaseRestart: true })));
+  },
+
+  handlePhaseTransition: async (contextKey) => {
+    // Stop the agent process and clear session ID so next start gets a fresh session
+    try {
+      await tauri.resetAgentSession(contextKey);
+    } catch (e) {
+      console.error("Failed to reset agent session:", e);
+      // Fall back to regular stop
+      try {
+        await tauri.stopAgent(contextKey);
+      } catch {
+        // Process may already be gone
+      }
+    }
+    // Reset frontend state for this context
+    set((s) => {
+      const { [contextKey]: _, ...rest } = s.sessions;
+      return {
+        sessions: rest,
+        pendingApprovals: s.pendingApprovals.filter((a) => a.contextKey !== contextKey),
+      };
+    });
+  },
+
   addPendingApproval: (approval) => {
     set((s) => ({ pendingApprovals: [...s.pendingApprovals, approval] }));
   },
@@ -367,16 +426,27 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }));
   },
 
-  respondToApproval: async (requestId, approved, reason) => {
+  respondToApproval: async (requestId, approved, reason, fallbackToolName) => {
     const pending = get().pendingApprovals.find((a) => a.requestId === requestId);
+    const effectiveToolName = pending?.toolName ?? fallbackToolName;
     try {
       await tauri.respondToApproval(requestId, approved, reason);
     } catch (e) {
       console.error("Failed to respond to approval:", e);
     }
-    if (approved && pending?.toolName.includes("write_project_file")) {
+    if (approved && effectiveToolName) {
       const { useProjectStore } = await import("./project-store");
-      useProjectStore.getState().bumpFileWriteVersion();
+      if (effectiveToolName.includes("write_project_file")) {
+        useProjectStore.getState().bumpFileWriteVersion();
+      }
+      if (effectiveToolName === "transition_phase") {
+        // Set flag — the message-end handler will perform the actual restart
+        // after project.json is guaranteed to be written by the MCP server.
+        const contextKey = pending?.contextKey;
+        if (contextKey) {
+          get().markNeedsPhaseRestart(contextKey);
+        }
+      }
     }
     get().removePendingApproval(requestId);
   },

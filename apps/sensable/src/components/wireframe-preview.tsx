@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   listWireframes,
   readWireframe,
@@ -7,13 +7,18 @@ import {
   type WireframeOption,
 } from "../lib/tauri";
 import { useProjectStore } from "../stores/project-store";
+import { useAgentStore } from "../stores/agent-store";
+import { useInspectorMessages } from "../hooks/use-inspector-messages";
+import { injectInspectorScript } from "../lib/inspector-script";
+import { InspectToggle } from "./inspect-toggle";
 
 interface WireframePreviewProps {
   featureId: string;
   onLoadStatus?: (hasWireframes: boolean) => void;
+  onChosenStatus?: (isChosen: boolean) => void;
 }
 
-export function WireframePreview({ featureId, onLoadStatus }: WireframePreviewProps) {
+export function WireframePreview({ featureId, onLoadStatus, onChosenStatus }: WireframePreviewProps) {
   const projectPath = useProjectStore((s) => s.projectPath);
   const fileWriteVersion = useProjectStore((s) => s.fileWriteVersion);
   const [manifest, setManifest] = useState<WireframeManifest | null>(null);
@@ -22,6 +27,9 @@ export function WireframePreview({ featureId, onLoadStatus }: WireframePreviewPr
   const [htmlContent, setHtmlContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingHtml, setLoadingHtml] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  useInspectorMessages(iframeRef, "wireframe", featureId);
 
   // Load manifest (re-fetches when files are written via MCP approval)
   useEffect(() => {
@@ -41,10 +49,12 @@ export function WireframePreview({ featureId, onLoadStatus }: WireframePreviewPr
           setActiveVariantFile(null);
         }
         onLoadStatus?.(m.options.length > 0);
+        onChosenStatus?.(m.chosenOption !== null);
       })
       .catch(() => {
         setManifest(null);
         onLoadStatus?.(false);
+        onChosenStatus?.(false);
       })
       .finally(() => setLoading(false));
   }, [projectPath, featureId, fileWriteVersion]);
@@ -67,6 +77,13 @@ export function WireframePreview({ featureId, onLoadStatus }: WireframePreviewPr
     try {
       const updated = await chooseWireframe(projectPath, featureId, activeOptionId);
       setManifest(updated);
+
+      // Notify the agent about the chosen wireframe so it can build a prototype
+      const chosenOption = updated.options.find((o) => o.id === activeOptionId);
+      onChosenStatus?.(true);
+      const contextKey = `feature:${featureId}`;
+      const message = `I've chosen wireframe "${chosenOption?.title ?? activeOptionId}". Please build a prototype based on it.`;
+      await useAgentStore.getState().sendMessage(contextKey, projectPath, message);
     } catch (e) {
       console.error("Failed to choose wireframe:", e);
     }
@@ -152,9 +169,12 @@ export function WireframePreview({ featureId, onLoadStatus }: WireframePreviewPr
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border">
         {/* Toolbar */}
         <div className="flex shrink-0 items-center justify-between border-b border-border bg-accent/30 px-3 py-1.5">
-          <span className="text-[11px] text-muted-foreground">
-            {activeVariantFile}
-          </span>
+          <div className="flex items-center gap-2">
+            <InspectToggle />
+            <span className="text-[11px] text-muted-foreground">
+              {activeVariantFile}
+            </span>
+          </div>
           <div className="flex items-center gap-2">
             {!isChosen && activeOption && (
               <button
@@ -179,7 +199,8 @@ export function WireframePreview({ featureId, onLoadStatus }: WireframePreviewPr
           </div>
         ) : htmlContent ? (
           <iframe
-            srcDoc={htmlContent}
+            ref={iframeRef}
+            srcDoc={injectInspectorScript(htmlContent)}
             className="flex-1 w-full bg-white"
             sandbox="allow-scripts"
             title={`Wireframe: ${activeOption?.title ?? activeVariantFile}`}

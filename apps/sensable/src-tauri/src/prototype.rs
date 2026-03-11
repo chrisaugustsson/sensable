@@ -1,6 +1,8 @@
 use crate::commands::project::generate_preview_entries;
 use serde::{Deserialize, Serialize};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -8,6 +10,163 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 const DEFAULT_PORT: u16 = 5555;
+
+/// Inspector IIFE injected into prototype iframes for element inspection.
+/// Must stay in sync with apps/sensable/src/lib/inspector-script.ts.
+const INSPECTOR_IIFE: &str = r#"(function() {
+  var enabled = false;
+  var overlay = null;
+  var label = null;
+
+  function createOverlay() {
+    overlay = document.createElement("div");
+    overlay.setAttribute("data-inspector", "overlay");
+    overlay.style.cssText =
+      "position:fixed;z-index:2147483647;pointer-events:none;" +
+      "outline:2px solid #3b82f6;background:rgba(59,130,246,0.08);" +
+      "transition:all 0.05s ease-out;display:none;";
+    document.body.appendChild(overlay);
+
+    label = document.createElement("div");
+    label.setAttribute("data-inspector", "label");
+    label.style.cssText =
+      "position:fixed;z-index:2147483647;pointer-events:none;" +
+      "background:#3b82f6;color:#fff;font-size:11px;font-family:monospace;" +
+      "padding:2px 6px;border-radius:3px;white-space:nowrap;display:none;";
+    document.body.appendChild(label);
+  }
+
+  function isInspectorElement(el) {
+    return el && el.getAttribute && el.getAttribute("data-inspector");
+  }
+
+  function isIgnored(el) {
+    var tag = el.tagName && el.tagName.toLowerCase();
+    return tag === "html" || tag === "body" || isInspectorElement(el);
+  }
+
+  function buildSelector(el) {
+    var parts = [];
+    var current = el;
+    var depth = 0;
+    while (current && current.nodeType === 1 && depth < 4) {
+      if (isIgnored(current)) break;
+      var tag = current.tagName.toLowerCase();
+      var cls = current.className && typeof current.className === "string"
+        ? current.className.trim().split(/\s+/).filter(function(c) { return c; }).slice(0, 2).join(".")
+        : "";
+      parts.unshift(cls ? tag + "." + cls : tag);
+      current = current.parentElement;
+      depth++;
+    }
+    return parts.join(" > ");
+  }
+
+  function getAncestors(el) {
+    var ancestors = [];
+    var current = el.parentElement;
+    var depth = 0;
+    while (current && current.nodeType === 1 && depth < 3) {
+      if (isIgnored(current)) break;
+      var tag = current.tagName.toLowerCase();
+      var cls = current.className && typeof current.className === "string"
+        ? current.className.trim().split(/\s+/).filter(function(c) { return c; }).slice(0, 2).join(".")
+        : "";
+      ancestors.push(cls ? tag + "." + cls : tag);
+      current = current.parentElement;
+      depth++;
+    }
+    return ancestors;
+  }
+
+  function getLabelText(el) {
+    var tag = el.tagName.toLowerCase();
+    var cls = el.className && typeof el.className === "string"
+      ? "." + el.className.trim().split(/\s+/).filter(function(c) { return c; }).slice(0, 2).join(".")
+      : "";
+    return tag + cls;
+  }
+
+  function onMouseMove(e) {
+    var target = e.target;
+    if (!target || isIgnored(target)) {
+      overlay.style.display = "none";
+      label.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    overlay.style.top = rect.top + "px";
+    overlay.style.left = rect.left + "px";
+    overlay.style.width = rect.width + "px";
+    overlay.style.height = rect.height + "px";
+    overlay.style.display = "block";
+
+    label.textContent = getLabelText(target);
+    var labelTop = rect.top - 22;
+    if (labelTop < 0) labelTop = rect.bottom + 2;
+    label.style.top = labelTop + "px";
+    label.style.left = rect.left + "px";
+    label.style.display = "block";
+  }
+
+  function onClick(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    var target = e.target;
+    if (!target || isIgnored(target)) return;
+
+    var text = (target.textContent || "").trim();
+    if (text.length > 100) text = text.substring(0, 100) + "...";
+
+    var html = target.outerHTML || "";
+    if (html.length > 500) html = html.substring(0, 500) + "...";
+
+    var classes = target.className && typeof target.className === "string"
+      ? target.className.trim().split(/\s+/).filter(function(c) { return c; })
+      : [];
+
+    var payload = {
+      tag: target.tagName.toLowerCase(),
+      id: target.id || "",
+      classes: classes,
+      textContent: text,
+      outerHTML: html,
+      selector: buildSelector(target),
+      ancestors: getAncestors(target)
+    };
+
+    window.parent.postMessage({ type: "element-selected", element: payload }, "*");
+    disable();
+  }
+
+  function enable() {
+    if (enabled) return;
+    enabled = true;
+    if (!overlay) createOverlay();
+    document.body.style.cursor = "crosshair";
+    document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("click", onClick, true);
+  }
+
+  function disable() {
+    if (!enabled) return;
+    enabled = false;
+    document.body.style.cursor = "";
+    document.removeEventListener("mousemove", onMouseMove, true);
+    document.removeEventListener("click", onClick, true);
+    if (overlay) {
+      overlay.style.display = "none";
+      label.style.display = "none";
+    }
+  }
+
+  window.addEventListener("message", function(e) {
+    if (e.data && e.data.type === "inspector-enable") enable();
+    if (e.data && e.data.type === "inspector-disable") disable();
+  });
+})();"#;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PrototypeServerStatus {
@@ -58,12 +217,16 @@ pub async fn setup_prototype_server(
 
     fs::create_dir_all(server_dir.join("src"))
         .map_err(|e| format!("Failed to create prototype-server dir: {}", e))?;
-    fs::create_dir_all(server_dir.join("features"))
-        .map_err(|e| format!("Failed to create features dir: {}", e))?;
     fs::create_dir_all(server_dir.join("design-system").join("components"))
         .map_err(|e| format!("Failed to create design-system/components dir: {}", e))?;
     fs::create_dir_all(server_dir.join("design-system").join("layouts"))
         .map_err(|e| format!("Failed to create design-system/layouts dir: {}", e))?;
+    fs::create_dir_all(server_dir.join("public"))
+        .map_err(|e| format!("Failed to create public dir: {}", e))?;
+
+    // Write inspector script for element inspection in prototypes
+    fs::write(server_dir.join("public").join("__inspector.js"), INSPECTOR_IIFE)
+        .map_err(|e| format!("Failed to write __inspector.js: {}", e))?;
 
     // Write package.json based on framework
     let package_json = match framework.as_str() {
@@ -303,7 +466,33 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [
+    vue(),
+    tailwindcss(),
+    {
+      name: "sensable-inspector",
+      transformIndexHtml(html) {
+        return html.replace("</body>", '<script src="/__inspector.js"></script></body>');
+      },
+    },
+    {
+      name: "sensable-theme",
+      transformIndexHtml(html) {
+        const script = `<script>
+          (function() {
+            window.addEventListener("message", function(e) {
+              if (e.data && e.data.type === "set-theme") {
+                var isDark = e.data.theme === "dark";
+                document.documentElement.classList.toggle("dark", isDark);
+                document.body.classList.toggle("dark", isDark);
+              }
+            });
+          })();
+        </script>`;
+        return html.replace("</head>", script + "</head>");
+      },
+    },
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -323,7 +512,33 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: "sensable-inspector",
+      transformIndexHtml(html) {
+        return html.replace("</body>", '<script src="/__inspector.js"></script></body>');
+      },
+    },
+    {
+      name: "sensable-theme",
+      transformIndexHtml(html) {
+        const script = `<script>
+          (function() {
+            window.addEventListener("message", function(e) {
+              if (e.data && e.data.type === "set-theme") {
+                var isDark = e.data.theme === "dark";
+                document.documentElement.classList.toggle("dark", isDark);
+                document.body.classList.toggle("dark", isDark);
+              }
+            });
+          })();
+        </script>`;
+        return html.replace("</head>", script + "</head>");
+      },
+    },
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -340,6 +555,97 @@ export default defineConfig({
     };
     fs::write(server_dir.join("vite.config.ts"), vite_config)
         .map_err(|e| format!("Failed to write vite.config.ts: {}", e))
+}
+
+/// Sync symlinks in prototype-server/features/ so each feature with a prototype
+/// directory is accessible to Vite.
+///
+/// - Migrates real directories at prototype-server/features/{id} to the canonical
+///   location at .sensable/features/{id}/prototype, then replaces them with symlinks
+/// - Removes stale symlinks for features whose prototype dir no longer exists
+/// - Creates symlinks: prototype-server/features/{id} -> ../../features/{id}/prototype
+#[cfg(unix)]
+fn sync_feature_symlinks(project_path: &str) -> Result<(), String> {
+    let sensable = Path::new(project_path).join(".sensable");
+    let features_src = sensable.join("features");
+    let server_features = sensable.join("prototype-server").join("features");
+
+    // Ensure the prototype-server/features/ directory exists
+    fs::create_dir_all(&server_features)
+        .map_err(|e| format!("Failed to create prototype-server/features dir: {}", e))?;
+
+    // Phase 1: Migrate real directories to canonical location
+    if let Ok(entries) = fs::read_dir(&server_features) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            let metadata = match fs::symlink_metadata(&entry_path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            // Only migrate real directories (not symlinks)
+            if !metadata.file_type().is_symlink() && metadata.is_dir() {
+                let feature_id = match entry_path.file_name() {
+                    Some(n) => n.to_string_lossy().to_string(),
+                    None => continue,
+                };
+                let canonical_dst = features_src.join(&feature_id).join("prototype");
+                if !canonical_dst.exists() {
+                    fs::create_dir_all(canonical_dst.parent().unwrap())
+                        .map_err(|e| format!("Failed to create feature dir: {}", e))?;
+                    fs::rename(&entry_path, &canonical_dst)
+                        .map_err(|e| format!("Failed to migrate prototype for {}: {}", feature_id, e))?;
+                } else {
+                    // Canonical already exists — remove the stale real dir
+                    let _ = fs::remove_dir_all(&entry_path);
+                }
+            }
+        }
+    }
+
+    // Phase 2: Remove stale symlinks (targets no longer exist)
+    if let Ok(entries) = fs::read_dir(&server_features) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            let metadata = match fs::symlink_metadata(&entry_path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if metadata.file_type().is_symlink() && !entry_path.exists() {
+                let _ = fs::remove_file(&entry_path);
+            }
+        }
+    }
+
+    // Phase 3: Create missing symlinks for features that have a prototype dir
+    if features_src.exists() {
+        if let Ok(entries) = fs::read_dir(&features_src) {
+            for entry in entries.flatten() {
+                let feature_dir = entry.path();
+                if !feature_dir.is_dir() {
+                    continue;
+                }
+                let feature_id = match feature_dir.file_name() {
+                    Some(n) => n.to_string_lossy().to_string(),
+                    None => continue,
+                };
+                let prototype_src = feature_dir.join("prototype");
+                if !prototype_src.exists() {
+                    continue;
+                }
+                let symlink_path = server_features.join(&feature_id);
+                // Skip if symlink already exists
+                if symlink_path.exists() || fs::symlink_metadata(&symlink_path).is_ok() {
+                    continue;
+                }
+                // Relative symlink: ../../features/{id}/prototype
+                let target = Path::new("../../features").join(&feature_id).join("prototype");
+                unix_fs::symlink(&target, &symlink_path)
+                    .map_err(|e| format!("Failed to create symlink for feature {}: {}", feature_id, e))?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Start the Vite dev server and wait until it's ready
@@ -385,6 +691,9 @@ pub async fn start_prototype_server(
             return Err(format!("{} install failed: {}", pkg_mgr, stderr));
         }
     }
+
+    // Sync symlinks for feature prototypes into prototype-server/features/
+    sync_feature_symlinks(&project_path)?;
 
     // Spawn Vite dev server directly (not via npx) so that child.kill()
     // actually terminates Vite instead of just killing the npx wrapper.
@@ -555,6 +864,9 @@ pub async fn reinstall_prototype_server(
 
     // Regenerate preview entries for design-system components/layouts
     generate_preview_entries(&project_path, &framework);
+
+    // Restore symlinks for feature prototypes (prototypes live outside prototype-server/)
+    sync_feature_symlinks(&project_path)?;
 
     Ok(())
 }

@@ -41,6 +41,12 @@ export function MessageBubble({ message }: { message: AgentMessage }) {
     return (
       <div className="flex justify-end">
         <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-primary text-primary-foreground">
+          {message.elementRef && (
+            <div className="mb-1.5 rounded border border-blue-500/20 bg-blue-500/5 px-2 py-1 font-mono text-[11px] text-blue-300">
+              <span className="opacity-60">&#128269;</span>{" "}
+              {message.elementRef.outerHTML}
+            </div>
+          )}
           {message.images && message.images.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {message.images.map((img, i) => (

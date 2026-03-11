@@ -8,6 +8,8 @@ import {
   type PrototypeServerStatus,
 } from "../lib/tauri";
 import { useProjectStore } from "../stores/project-store";
+import { useInspectorMessages } from "../hooks/use-inspector-messages";
+import { InspectToggle } from "./inspect-toggle";
 
 interface PrototypePreviewProps {
   featureId: string;
@@ -33,6 +35,8 @@ export function PrototypePreview({ featureId }: PrototypePreviewProps) {
   const [deviceSize, setDeviceSize] = useState<DeviceSize>("desktop");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  useInspectorMessages(iframeRef, "prototype", featureId);
 
   // Check server status on mount
   useEffect(() => {
@@ -107,6 +111,13 @@ export function PrototypePreview({ featureId }: PrototypePreviewProps) {
     setTheme(next);
     iframeRef.current?.contentWindow?.postMessage(
       { type: "set-theme", theme: next },
+      "*",
+    );
+  }, [theme]);
+
+  const handleIframeLoad = useCallback(() => {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "set-theme", theme },
       "*",
     );
   }, [theme]);
@@ -198,6 +209,9 @@ export function PrototypePreview({ featureId }: PrototypePreviewProps) {
             </svg>
           </button>
 
+          {/* Inspect element */}
+          <InspectToggle />
+
           {/* Device size toggle */}
           <div className="flex items-center gap-0.5 rounded-md bg-accent/50 p-0.5">
             {(["mobile", "tablet", "desktop"] as const).map((size) => (
@@ -288,6 +302,7 @@ export function PrototypePreview({ featureId }: PrototypePreviewProps) {
           ref={iframeRef}
           key={iframeKey}
           src={iframeUrl}
+          onLoad={handleIframeLoad}
           style={{ width: deviceWidths[deviceSize] }}
           className="h-full min-h-0 flex-1 transition-[width] duration-300"
           title={`Prototype: ${featureId}`}

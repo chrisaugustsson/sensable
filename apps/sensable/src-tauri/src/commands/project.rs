@@ -1757,10 +1757,18 @@ function ItemCard({{ item, onClick }}) {{
         </div>
         {{item.description && <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">{{item.description}}</p>}}
       </div>
-      <div className="p-4 min-h-[120px] flex items-center justify-center">
-        <ErrorBoundary name={{item.name}}>
-          <item.Component />
-        </ErrorBoundary>
+      <div className="relative overflow-hidden">
+        <div style={{{{ width: 1280, pointerEvents: "none" }}}}>
+          <ErrorBoundary name={{item.name}}>
+            <item.Component />
+          </ErrorBoundary>
+        </div>
+        <div className="absolute inset-0 flex items-center justify-center bg-background/0 group-hover:bg-background/60 transition-all duration-200">
+          <span className="flex items-center gap-1.5 rounded-md bg-foreground/90 px-3 py-1.5 text-xs font-medium text-background opacity-0 scale-95 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 shadow-lg">
+            <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 8c0-3 2.5-5.5 6-5.5S14 5 14 8s-2.5 5.5-6 5.5S2 11 2 8z" /><circle cx="8" cy="8" r="2" /></svg>
+            View layout
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -1906,7 +1914,15 @@ const CatalogApp = defineComponent({{
                   h("h3", {{ class: "text-sm font-medium" }}, item.name),
                   item.description ? h("p", {{ class: "mt-0.5 text-xs text-muted-foreground" }}, item.description) : null,
                 ]),
-                h("div", {{ class: "p-4 min-h-[120px] flex items-center justify-center" }}, [h(item.component)]),
+                h("div", {{ class: "relative overflow-hidden" }}, [
+                  h("div", {{ style: {{ width: "1280px", pointerEvents: "none" }} }}, [h(item.component)]),
+                  h("div", {{ class: "absolute inset-0 flex items-center justify-center bg-background/0 group-hover:bg-background/60 transition-all duration-200" }}, [
+                    h("span", {{ class: "flex items-center gap-1.5 rounded-md bg-foreground/90 px-3 py-1.5 text-xs font-medium text-background opacity-0 scale-95 group-hover:opacity-100 group-hover:scale-100 transition-all duration-200 shadow-lg" }}, [
+                      h("svg", {{ class: "h-3.5 w-3.5", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", innerHTML: '<path d="M2 8c0-3 2.5-5.5 6-5.5S14 5 14 8s-2.5 5.5-6 5.5S2 11 2 8z" /><circle cx="8" cy="8" r="2" />' }}),
+                      "View layout"
+                    ])
+                  ])
+                ]),
               ]))
             ),
           ]))

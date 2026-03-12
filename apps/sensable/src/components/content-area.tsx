@@ -343,14 +343,33 @@ function DevelopContent({
   featureId: string;
   hint: string;
 }) {
+  const projectPath = useProjectStore((s) => s.projectPath);
+  const fileWriteVersion = useProjectStore((s) => s.fileWriteVersion);
   const [hasWireframes, setHasWireframes] = useState(false);
   const [wireframeChosen, setWireframeChosen] = useState<boolean>(false);
-  const [subStep, setSubStep] = useState<"wireframes" | "prototype">("wireframes");
+  const subStep = useProjectStore((s) => s.developSubStep);
+  const setDevelopSubStep = useProjectStore((s) => s.setDevelopSubStep);
+
+  // Fetch wireframe status independently so it survives sub-step switches
+  useEffect(() => {
+    if (!projectPath) return;
+    import("../lib/tauri").then(({ listWireframes }) =>
+      listWireframes(projectPath, featureId)
+        .then((m) => {
+          setHasWireframes(m.options.length > 0);
+          setWireframeChosen(m.chosenOption !== null);
+        })
+        .catch(() => {
+          setHasWireframes(false);
+          setWireframeChosen(false);
+        }),
+    );
+  }, [projectPath, featureId, fileWriteVersion]);
 
   // Auto-advance to prototype when wireframe is chosen
   useEffect(() => {
-    if (wireframeChosen) setSubStep("prototype");
-  }, [wireframeChosen]);
+    if (wireframeChosen) setDevelopSubStep("prototype");
+  }, [wireframeChosen, setDevelopSubStep]);
 
   const handleChosenStatus = useCallback((isChosen: boolean) => {
     setWireframeChosen(isChosen);
@@ -362,7 +381,7 @@ function DevelopContent({
       {hasWireframes && (
         <div className="mb-4 flex items-center gap-2">
           <button
-            onClick={() => setSubStep("wireframes")}
+            onClick={() => setDevelopSubStep("wireframes")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs transition-colors ${
               subStep === "wireframes"
                 ? "bg-accent text-foreground"
@@ -378,7 +397,7 @@ function DevelopContent({
           </button>
           <div className="h-px w-4 bg-border" />
           <button
-            onClick={() => wireframeChosen && setSubStep("prototype")}
+            onClick={() => wireframeChosen && setDevelopSubStep("prototype")}
             disabled={!wireframeChosen}
             className={`rounded-md px-3 py-1 text-xs transition-colors ${
               subStep === "prototype"

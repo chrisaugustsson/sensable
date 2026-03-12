@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Project } from "@sensable/schemas";
 import * as tauri from "../lib/tauri";
+import { useProjectStore } from "./project-store";
 
 export interface MessageImage {
   base64: string;
@@ -105,8 +106,27 @@ export function deriveContextKey(project: Project | null): string {
     return `app:onboarding-${project.onboarding.status}`;
   }
   const view = project.currentView;
-  if (view.type === "feature") return `feature:${view.featureId}`;
+  if (view.type === "feature") return `feature:${view.featureId}:${view.phase}`;
+  // Design system: per-item sessions when focused on a specific layout/component
+  if (view.type === "app" && view.view === "design-system") {
+    const focus = useProjectStore.getState().designSystemFocus;
+    if (focus) return `app:design-system:${focus.type}:${focus.itemId}`;
+  }
   return `app:${view.view}`;
+}
+
+/** Extract the feature ID from a context key like "feature:{id}:{phase}". */
+export function featureIdFromContextKey(contextKey: string): string | null {
+  if (!contextKey.startsWith("feature:")) return null;
+  const parts = contextKey.split(":");
+  return parts[1] ?? null;
+}
+
+/** Extract the phase from a context key like "feature:{id}:{phase}". */
+export function phaseFromContextKey(contextKey: string): string | null {
+  if (!contextKey.startsWith("feature:")) return null;
+  const parts = contextKey.split(":");
+  return parts[2] ?? null;
 }
 
 /** Get a session from the store, returning defaults for unknown keys. */
@@ -131,6 +151,110 @@ function updateSession(
       [contextKey]: { ...session, ...updater(session) },
     },
   };
+}
+
+const phaseLabels: Record<string, string> = {
+  discover: "Discover",
+  define: "Define",
+  develop: "Develop (Wireframes & Prototypes)",
+  deliver: "Deliver",
+};
+
+/**
+ * Build a context prefix for the first message in a feature agent session.
+ * This reinforces the system prompt so the agent knows exactly what mode it's in.
+ */
+function buildPhaseContext(contextKey: string): string | null {
+  const fid = featureIdFromContextKey(contextKey);
+  const phase = phaseFromContextKey(contextKey);
+  if (!fid || !phase) return null;
+
+  const project = useProjectStore.getState().project;
+  if (!project) return null;
+
+  const feature = project.features.find((f) => f.id === fid);
+  if (!feature) return null;
+
+  const label = phaseLabels[phase] ?? phase;
+
+  let subStepHint = "";
+  if (phase === "develop") {
+    const subStep = useProjectStore.getState().developSubStep;
+    subStepHint = subStep === "prototype"
+      ? " You are in PROTOTYPE sub-step — the user has chosen a wireframe and wants you to build an interactive prototype."
+      : " You are in WIREFRAME sub-step — generate wireframe layout options for the user to choose from.";
+  }
+
+  return (
+    `[Context: You are working on the feature "${feature.name}" in ${label} mode.${subStepHint} ` +
+    `All file operations MUST go through MCP tools (create_artifact, update_artifact, save_wireframe, save_prototype, etc.). ` +
+    `Work within the .sensable project folder — do NOT directly edit the user's source code files unless in Deliver mode.]\n\n`
+  );
+}
+
+/**
+ * Build a context prefix for the first message in an app-level agent session.
+ * Covers views like design-system, architect, project, etc.
+ */
+function buildAppContext(contextKey: string): string | null {
+  if (!contextKey.startsWith("app:")) return null;
+
+  // Per-item design system sessions: app:design-system:{type}:{itemId}
+  const dsMatch = contextKey.match(/^app:design-system:(layouts|components):(.+)$/);
+  if (dsMatch) {
+    const [, itemType, itemId] = dsMatch;
+    const project = useProjectStore.getState().project;
+    const ds = project?.designSystem;
+    const items = itemType === "layouts" ? ds?.layouts : ds?.components;
+    const item = items?.find((i: { id: string }) => i.id === itemId);
+    const itemName = item?.name ?? itemId;
+    const singular = itemType === "layouts" ? "LAYOUT" : "COMPONENT";
+
+    return (
+      `[Context: You are working on the design system ${singular} "${itemName}". ` +
+      `All file operations MUST go through MCP tools (create_artifact, update_artifact, write_project_file, etc.). ` +
+      `Work within the .sensable project folder — do NOT directly edit the user's source code files.]\n\n`
+    );
+  }
+
+  const view = contextKey.slice(4);
+
+  const hints: Record<string, string> = {
+    "design-system":
+      "[Context: You are working on the DESIGN SYSTEM. " +
+      "Define colors, typography, spacing, border radius, and component styles. " +
+      "All file operations MUST go through MCP tools (create_artifact, update_artifact, write_project_file, etc.). " +
+      "Work within the .sensable project folder — do NOT directly edit the user's source code files.]\n\n",
+    architect:
+      "[Context: You are working on the ARCHITECTURE view. " +
+      "Help plan system architecture — data models, API design, routing, and component structure. " +
+      "All file operations MUST go through MCP tools.]\n\n",
+    project:
+      "[Context: You are working on the PROJECT SPEC. " +
+      "Help refine the project's high-level spec — what it is, who it's for, and what it aims to achieve. " +
+      "All file operations MUST go through MCP tools.]\n\n",
+    overview:
+      "[Context: You are in the OVERVIEW view. " +
+      "Help the user describe their product idea and break it down into features. " +
+      "All file operations MUST go through MCP tools.]\n\n",
+  };
+
+  return hints[view] ?? null;
+}
+
+/**
+ * Build a short sub-step context for messages within an already-running develop session.
+ * Only returns a prefix when the phase is "develop" — for other phases, returns null.
+ */
+function buildDevelopSubStepContext(contextKey: string): string | null {
+  const phase = phaseFromContextKey(contextKey);
+  if (phase !== "develop") return null;
+
+  const subStep = useProjectStore.getState().developSubStep;
+  if (subStep === "prototype") {
+    return "[Context: You are in PROTOTYPE mode. Build an interactive prototype from the chosen wireframe and design system.]\n\n";
+  }
+  return "[Context: You are in WIREFRAME mode. Generate wireframe layout options for the user to choose from.]\n\n";
 }
 
 interface AgentState {
@@ -218,9 +342,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       const session = getSessionState(get().sessions, contextKey);
       if (session.status === "running") {
-        await tauri.sendAgentMessage(contextKey, content, tauriImages);
+        // For ongoing develop sessions, prepend sub-step context so the agent knows wireframe vs prototype
+        const subStepContext = buildDevelopSubStepContext(contextKey);
+        const messageForRunning = subStepContext ? subStepContext + content : content;
+        await tauri.sendAgentMessage(contextKey, messageForRunning, tauriImages);
       } else {
-        await tauri.startAgent(projectPath, contextKey, content, tauriImages);
+        // For new sessions, prepend context to orient the agent (feature or app-level)
+        const phaseContext = buildPhaseContext(contextKey) ?? buildAppContext(contextKey);
+        const messageForAgent = phaseContext ? phaseContext + content : content;
+        await tauri.startAgent(projectPath, contextKey, messageForAgent, tauriImages);
       }
     } catch (e) {
       set((s) =>

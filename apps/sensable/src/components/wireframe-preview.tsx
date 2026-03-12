@@ -81,7 +81,7 @@ export function WireframePreview({ featureId, onLoadStatus, onChosenStatus }: Wi
       // Notify the agent about the chosen wireframe so it can build a prototype
       const chosenOption = updated.options.find((o) => o.id === activeOptionId);
       onChosenStatus?.(true);
-      const contextKey = `feature:${featureId}`;
+      const contextKey = `feature:${featureId}:develop`;
       const message = `I've chosen wireframe "${chosenOption?.title ?? activeOptionId}". Please build a prototype based on it.`;
       await useAgentStore.getState().sendMessage(contextKey, projectPath, message);
     } catch (e) {

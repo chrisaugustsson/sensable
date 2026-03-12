@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { useAgentStore, deriveContextKey, getSessionState, type AgentStatusType, type UsageData } from "../stores/agent-store";
+import { useAgentStore, deriveContextKey, getSessionState, featureIdFromContextKey, type AgentStatusType, type UsageData } from "../stores/agent-store";
 import { useProjectStore } from "../stores/project-store";
 import * as tauri from "../lib/tauri";
 
@@ -80,22 +80,30 @@ interface UserQuestionPayload extends ScopedPayload {
 }
 
 /** Derive a context key for an approval request that lacks one. */
-function approvalContextKey(featureId?: string): string {
-  if (featureId) return `feature:${featureId}`;
+function approvalContextKey(featureId?: string, phase?: string): string {
+  if (featureId) {
+    // Use the phase from the approval if available, otherwise fall back to the feature's current phase
+    const resolvedPhase = phase || (() => {
+      const project = useProjectStore.getState().project;
+      const feature = project?.features.find((f) => f.id === featureId);
+      return feature?.currentPhase ?? "discover";
+    })();
+    return `feature:${featureId}:${resolvedPhase}`;
+  }
   // Fall back to current view for app-level agents
   const project = useProjectStore.getState().project;
   if (!project) return "app:overview";
   const view = project.currentView;
-  if (view.type === "feature") return `feature:${view.featureId}`;
+  if (view.type === "feature") return `feature:${view.featureId}:${view.phase}`;
   return `app:${view.view}`;
 }
 
 /** Resolve a context key to a human-readable label. */
 function contextLabel(contextKey: string): string {
   const project = useProjectStore.getState().project;
-  if (contextKey.startsWith("feature:")) {
-    const featureId = contextKey.slice("feature:".length);
-    const feature = project?.features.find((f) => f.id === featureId);
+  const fid = featureIdFromContextKey(contextKey);
+  if (fid) {
+    const feature = project?.features.find((f) => f.id === fid);
     return feature?.name ?? "Feature";
   }
   if (contextKey.startsWith("app:")) {
@@ -263,7 +271,7 @@ export function useAgentEvents() {
     unlisteners.push(
       listen<ApprovalRequestPayload>("agent:approval-request", async (event) => {
         const p = event.payload;
-        const contextKey = approvalContextKey(p.featureId);
+        const contextKey = approvalContextKey(p.featureId, p.phase);
         const { autoAcceptRules, respondToApproval } = store();
 
         // Never auto-accept execute_command or submit_plan for safety

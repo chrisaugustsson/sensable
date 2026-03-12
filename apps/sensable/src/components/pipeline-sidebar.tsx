@@ -3,7 +3,7 @@ import type { Feature, FeaturePhaseName } from "@sensable/schemas";
 import {
   useProjectStore,
 } from "../stores/project-store";
-import { useAgentStore, getSessionState, type AgentStatusType } from "../stores/agent-store";
+import { useAgentStore, getSessionState, featureIdFromContextKey, type AgentStatusType } from "../stores/agent-store";
 
 function statusDot(status: string) {
   if (status === "complete") return "bg-green-500";
@@ -16,36 +16,57 @@ function featureStatusLabel(feature: Feature): string {
   return phase.charAt(0).toUpperCase() + phase.slice(1);
 }
 
-/** Derive agent status for a feature from the sessions map. */
+/** Check if a context key belongs to a given feature. */
+function isFeatureKey(contextKey: string, featureId: string): boolean {
+  return featureIdFromContextKey(contextKey) === featureId;
+}
+
+/** Derive the "most active" agent status for a feature across all its phase sessions. */
 function useFeatureAgentStatus(featureId: string): AgentStatusType {
   return useAgentStore((s) => {
-    const session = getSessionState(s.sessions, `feature:${featureId}`);
-    return session.status;
+    // Priority: thinking > starting > running > error > offline
+    const priorities: AgentStatusType[] = ["thinking", "starting", "running", "error"];
+    for (const key of Object.keys(s.sessions)) {
+      if (!isFeatureKey(key, featureId)) continue;
+      const session = s.sessions[key];
+      for (const p of priorities) {
+        if (session.status === p) return p;
+      }
+    }
+    return "offline";
   });
 }
 
-/** Check if a feature has pending approvals. */
+/** Check if a feature has pending approvals (across all phases). */
 function useFeatureHasPendingApproval(featureId: string): boolean {
   return useAgentStore((s) =>
-    s.pendingApprovals.some((a) => a.contextKey === `feature:${featureId}`),
+    s.pendingApprovals.some((a) => isFeatureKey(a.contextKey, featureId)),
   );
 }
 
 function useFeatureApprovalCount(featureId: string): number {
   return useAgentStore((s) =>
-    s.pendingApprovals.filter((a) => a.contextKey === `feature:${featureId}`).length,
+    s.pendingApprovals.filter((a) => isFeatureKey(a.contextKey, featureId)).length,
   );
 }
 
 function useFeatureHasQuestion(featureId: string): boolean {
   return useAgentStore((s) => {
-    const session = getSessionState(s.sessions, `feature:${featureId}`);
-    return session.pendingQuestion !== null;
+    for (const key of Object.keys(s.sessions)) {
+      if (!isFeatureKey(key, featureId)) continue;
+      if (s.sessions[key].pendingQuestion !== null) return true;
+    }
+    return false;
   });
 }
 
 function useFeatureIsUnread(featureId: string): boolean {
-  return useAgentStore((s) => s.unreadContextKeys.has(`feature:${featureId}`));
+  return useAgentStore((s) => {
+    for (const key of s.unreadContextKeys) {
+      if (isFeatureKey(key, featureId)) return true;
+    }
+    return false;
+  });
 }
 
 function FeatureAgentDot({ featureId }: { featureId: string }) {
@@ -212,12 +233,14 @@ export function PipelineSidebar() {
   }
 
   const handleDeleteFeature = useCallback(async (featureId: string) => {
-    // Stop any active agent for this feature
+    // Stop all active agents for this feature (across all phases)
     const agentStore = useAgentStore.getState();
-    const contextKey = `feature:${featureId}`;
-    const session = getSessionState(agentStore.sessions, contextKey);
-    if (session.status !== "offline") {
-      await agentStore.resetSession(contextKey);
+    for (const key of Object.keys(agentStore.sessions)) {
+      if (!isFeatureKey(key, featureId)) continue;
+      const session = agentStore.sessions[key];
+      if (session.status !== "offline") {
+        await agentStore.resetSession(key);
+      }
     }
     await deleteFeature(featureId);
     setConfirmDelete(null);

@@ -1,17 +1,18 @@
 import { create } from "zustand";
 import type { Project, Feature, CurrentView } from "@sensable/schemas";
 import * as tauri from "../lib/tauri";
-import { useAgentStore, deriveContextKey, getSessionState } from "./agent-store";
+import { useAgentStore } from "./agent-store";
 
 /** Stop all running agents and reset the agent store. */
 async function stopAllAndReset() {
   await useAgentStore.getState().resetAll();
 }
 
-/** Check if a context key has an active (non-offline) agent. */
-function hasActiveAgent(contextKey: string): boolean {
-  const session = getSessionState(useAgentStore.getState().sessions, contextKey);
-  return session.status !== "offline";
+export type DevelopSubStep = "wireframes" | "prototype";
+
+export interface DesignSystemFocus {
+  type: "layouts" | "components";
+  itemId: string;
 }
 
 interface ProjectState {
@@ -20,8 +21,10 @@ interface ProjectState {
   isLoading: boolean;
   error: string | null;
   fileWriteVersion: number;
-  /** Set when navigating within same feature to different phase while agent is active. */
-  pendingNavigation: { view: CurrentView; featureName: string } | null;
+  /** Transient: tracks which sub-step is active within Develop phase (not persisted). */
+  developSubStep: DevelopSubStep;
+  /** Transient: tracks the focused layout/component in the design system view (not persisted). */
+  designSystemFocus: DesignSystemFocus | null;
 
   createProject: (
     name: string,
@@ -31,8 +34,8 @@ interface ProjectState {
   openProject: (path: string) => Promise<void>;
   closeProject: () => void;
   setView: (view: CurrentView) => void;
-  confirmNavigation: () => Promise<void>;
-  cancelNavigation: () => void;
+  setDevelopSubStep: (subStep: DevelopSubStep) => void;
+  setDesignSystemFocus: (focus: DesignSystemFocus | null) => void;
   createFeature: (name: string, description: string) => Promise<Feature | null>;
   updateFeature: (feature: Feature) => Promise<void>;
   deleteFeature: (featureId: string) => Promise<void>;
@@ -46,7 +49,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   isLoading: false,
   error: null,
   fileWriteVersion: 0,
-  pendingNavigation: null,
+  developSubStep: "wireframes",
+  designSystemFocus: null,
 
   createProject: async (name, description, path) => {
     set({ isLoading: true, error: null });
@@ -72,39 +76,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   closeProject: () => {
     stopAllAndReset();
-    set({ project: null, projectPath: null, error: null, pendingNavigation: null });
+    set({ project: null, projectPath: null, error: null });
   },
 
   setView: (view) => {
     const { project, projectPath } = get();
     if (!project || !projectPath) return;
 
-    const prev = project.currentView;
-    const prevKey = deriveContextKey(project);
-
-    // Same feature, different phase → guard if agent is active
-    if (
-      prev.type === "feature" &&
-      view.type === "feature" &&
-      prev.featureId === view.featureId &&
-      prev.phase !== view.phase &&
-      hasActiveAgent(prevKey)
-    ) {
-      const feature = project.features.find((f) => f.id === prev.featureId);
-      set({ pendingNavigation: { view, featureName: feature?.name ?? "this feature" } });
-      return;
-    }
-
-    // App view → app view: stop the app agent (current behavior)
-    if (prev.type === "app" && view.type === "app" && hasActiveAgent(prevKey)) {
-      useAgentStore.getState().resetSession(prevKey);
-    }
-
-    // Feature → different feature, or feature ↔ app: just switch — don't kill anything
-
-    // Optimistic update
+    // Optimistic update — agents keep running in their own contexts
     const updated = { ...project, currentView: view };
-    set({ project: updated, pendingNavigation: null });
+    set({ project: updated });
 
     // Persist (the Rust side also updates feature.currentPhase if navigating to a feature phase)
     tauri.setView(projectPath, view).then((persisted) => {
@@ -112,24 +93,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }).catch(console.error);
   },
 
-  confirmNavigation: async () => {
-    const { pendingNavigation, project, projectPath } = get();
-    if (!pendingNavigation || !project || !projectPath) return;
-
-    const prevKey = deriveContextKey(project);
-    await useAgentStore.getState().resetSession(prevKey);
-
-    const updated = { ...project, currentView: pendingNavigation.view };
-    set({ project: updated, pendingNavigation: null });
-
-    tauri.setView(projectPath, pendingNavigation.view).then((persisted) => {
-      set({ project: persisted });
-    }).catch(console.error);
-  },
-
-  cancelNavigation: () => {
-    set({ pendingNavigation: null });
-  },
+  setDevelopSubStep: (subStep) => set({ developSubStep: subStep }),
+  setDesignSystemFocus: (focus) => set({ designSystemFocus: focus }),
 
   createFeature: async (name, description) => {
     const { project, projectPath } = get();

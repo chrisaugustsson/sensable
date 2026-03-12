@@ -403,6 +403,8 @@ function CatalogViewer({
   }>({ view: "catalog", selectedId: null });
   const manageRef = useRef<HTMLDivElement>(null);
 
+  const setDesignSystemFocus = useProjectStore((s) => s.setDesignSystemFocus);
+
   // Listen for catalog navigation events from iframe
   useEffect(() => {
     function handleMessage(e: MessageEvent) {
@@ -416,6 +418,20 @@ function CatalogViewer({
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
+
+  // Sync design system focus to project store for per-item agent sessions
+  useEffect(() => {
+    if (catalogContext.view === "detail" && catalogContext.selectedId) {
+      setDesignSystemFocus({ type, itemId: catalogContext.selectedId });
+    } else {
+      setDesignSystemFocus(null);
+    }
+  }, [catalogContext.view, catalogContext.selectedId, type, setDesignSystemFocus]);
+
+  // Clear focus on unmount
+  useEffect(() => {
+    return () => setDesignSystemFocus(null);
+  }, [setDesignSystemFocus]);
 
   // Close manage dropdown on click outside
   useEffect(() => {

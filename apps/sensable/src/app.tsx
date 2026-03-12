@@ -10,8 +10,10 @@ import { UserQuestionDialog } from "./components/user-question-dialog";
 import { ProjectPicker } from "./components/project-picker";
 import { OnboardingChat } from "./components/onboarding-chat";
 import { PlanDialog } from "./components/plan-dialog";
+import { ActiveSessionsMenu } from "./components/active-sessions-menu";
 import { useProjectStore, useCurrentFeature } from "./stores/project-store";
 import { useAgentStore, deriveContextKey, getSessionState } from "./stores/agent-store";
+
 import { useAgentEvents } from "./hooks/use-agent-events";
 
 function FooterStatus() {
@@ -58,38 +60,6 @@ function needsOnboarding(project: { onboarding?: { status: string } } | null): b
   return project.onboarding.status !== "complete";
 }
 
-function NavigationGuardDialog() {
-  const pendingNav = useProjectStore((s) => s.pendingNavigation);
-  const confirmNavigation = useProjectStore((s) => s.confirmNavigation);
-  const cancelNavigation = useProjectStore((s) => s.cancelNavigation);
-
-  if (!pendingNav) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-xl">
-        <h2 className="text-sm font-semibold text-foreground">Agent is running</h2>
-        <p className="mt-2 text-xs text-muted-foreground">
-          <strong>{pendingNav.featureName}</strong> has an active agent. Switching phases will stop it and clear the conversation.
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={cancelNavigation}
-            className="rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={confirmNavigation}
-            className="rounded-md bg-destructive px-3 py-1.5 text-xs text-destructive-foreground transition-colors hover:bg-destructive/90"
-          >
-            Stop agent and switch
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function App() {
   const project = useProjectStore((s) => s.project);
@@ -151,6 +121,9 @@ export function App() {
             </span>
           )}
         </div>
+        <div className="flex items-center gap-2">
+          <ActiveSessionsMenu />
+        </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
@@ -205,8 +178,6 @@ export function App() {
         theme="dark"
         position="bottom-right"
       />
-      <NavigationGuardDialog />
-
       {pendingPlan && (
         <PlanDialog
           approval={pendingPlan}

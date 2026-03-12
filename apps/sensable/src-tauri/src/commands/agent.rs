@@ -7,6 +7,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
+/// Extract the feature ID from a context key like "feature:{id}:{phase}".
+fn feature_id_from_context_key(context_key: &str) -> Option<&str> {
+    let rest = context_key.strip_prefix("feature:")?;
+    // rest = "{id}:{phase}" — take everything before the second ':'
+    Some(rest.split(':').next().unwrap_or(rest))
+}
+
+/// Extract the phase from a context key like "feature:{id}:{phase}".
+fn phase_from_context_key(context_key: &str) -> Option<&str> {
+    let rest = context_key.strip_prefix("feature:")?;
+    rest.split(':').nth(1)
+}
+
 /// Resolve the memory file path based on context key and project state.
 fn resolve_memory_path(project_path: &str, project: &Project, context_key: &str) -> Option<PathBuf> {
     let sensable = Path::new(project_path).join(".sensable");
@@ -21,13 +34,15 @@ fn resolve_memory_path(project_path: &str, project: &Project, context_key: &str)
     }
 
     // Normal mode: resolve from context_key
-    if let Some(feature_id) = context_key.strip_prefix("feature:") {
-        let phase = project
-            .features
-            .iter()
-            .find(|f| f.id == feature_id)
-            .map(|f| f.current_phase.as_str())
-            .unwrap_or("discover");
+    if let Some(feature_id) = feature_id_from_context_key(context_key) {
+        let phase = phase_from_context_key(context_key).unwrap_or_else(|| {
+            project
+                .features
+                .iter()
+                .find(|f| f.id == feature_id)
+                .map(|f| f.current_phase.as_str())
+                .unwrap_or("discover")
+        });
         Some(
             sensable
                 .join("features")
@@ -207,15 +222,17 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
 
     // Build context-specific instructions based on context_key
     let (context_title, context_instructions) =
-        if let Some(feature_id) = context_key.strip_prefix("feature:") {
-            // Feature context — find feature and use its current_phase
+        if let Some(feature_id) = feature_id_from_context_key(context_key) {
+            // Feature context — use phase from context key, fall back to feature's current_phase
             let feature = project.features.iter().find(|f| f.id == feature_id);
             let (feature_name, feature_desc) = feature
                 .map(|f| (f.name.as_str(), f.description.as_str()))
                 .unwrap_or(("Unknown", ""));
-            let phase = feature
-                .map(|f| f.current_phase.as_str())
-                .unwrap_or("discover");
+            let phase = phase_from_context_key(context_key).unwrap_or_else(|| {
+                feature
+                    .map(|f| f.current_phase.as_str())
+                    .unwrap_or("discover")
+            });
 
             let phase_instructions = match phase {
                 "discover" => format!(
@@ -794,10 +811,12 @@ fn build_mcp_env(context_key: &str, project: &Project) -> HashMap<String, String
     }
 
     // Normal operation
-    if let Some(feature_id) = context_key.strip_prefix("feature:") {
+    if let Some(feature_id) = feature_id_from_context_key(context_key) {
         env.insert("SENSABLE_CONTEXT_TYPE".into(), "feature".into());
         env.insert("SENSABLE_FEATURE_ID".into(), feature_id.into());
-        if let Some(feature) = project.features.iter().find(|f| f.id == feature_id) {
+        if let Some(phase) = phase_from_context_key(context_key) {
+            env.insert("SENSABLE_PHASE".into(), phase.into());
+        } else if let Some(feature) = project.features.iter().find(|f| f.id == feature_id) {
             env.insert("SENSABLE_PHASE".into(), feature.current_phase.clone());
         }
     } else if let Some(view) = context_key.strip_prefix("app:") {

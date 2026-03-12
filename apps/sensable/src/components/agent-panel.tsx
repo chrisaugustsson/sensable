@@ -17,11 +17,19 @@ function hasActiveTextStreaming(messages: AgentMessage[]): boolean {
 function useContextLabel(): string | null {
   const project = useProjectStore((s) => s.project);
   const feature = useCurrentFeature();
+  const dsFocus = useProjectStore((s) => s.designSystemFocus);
   if (!project) return null;
   const view = project.currentView;
   if (view.type === "feature" && feature) {
     const phase = view.phase.charAt(0).toUpperCase() + view.phase.slice(1);
     return `${feature.name} — ${phase}`;
+  }
+  if (view.type === "app" && view.view === "design-system" && dsFocus) {
+    const ds = project.designSystem;
+    const items = dsFocus.type === "layouts" ? ds?.layouts : ds?.components;
+    const item = items?.find((i) => i.id === dsFocus.itemId);
+    const typeLabel = dsFocus.type === "layouts" ? "Layout" : "Component";
+    return `${typeLabel}: ${item?.name ?? dsFocus.itemId}`;
   }
   const appLabels: Record<string, string> = {
     overview: "Overview",
@@ -60,7 +68,7 @@ export function AgentPanel() {
 
   return (
     <aside className="flex h-full flex-col border-l border-border">
-      <div className="flex items-center justify-between border-b border-border p-4">
+      <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2 min-w-0">
           <p className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground shrink-0">
             Agent
@@ -70,7 +78,6 @@ export function AgentPanel() {
               {contextLabel}
             </span>
           )}
-          <ContextUsage usage={usage} messages={messages} />
         </div>
         <div className="flex items-center gap-2">
           {autoAcceptRules.size > 0 && (
@@ -81,15 +88,6 @@ export function AgentPanel() {
               title={`Auto-approving: ${[...autoAcceptRules].map((r) => r.replace(/^mcp__sensable__/, "")).join(", ")}`}
             >
               Auto-approve ({autoAcceptRules.size})
-            </button>
-          )}
-          {status !== "offline" && (
-            <button
-              type="button"
-              onClick={() => resetSession(contextKey)}
-              className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              New session
             </button>
           )}
           <StatusBadge status={status} />
@@ -121,6 +119,18 @@ export function AgentPanel() {
       </div>
 
       <div className="border-t border-border p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <ContextUsage usage={usage} messages={messages} />
+          {status !== "offline" && (
+            <button
+              type="button"
+              onClick={() => resetSession(contextKey)}
+              className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              New session
+            </button>
+          )}
+        </div>
         <ChatInput
           onSubmit={(msg, images) =>
             projectPath &&

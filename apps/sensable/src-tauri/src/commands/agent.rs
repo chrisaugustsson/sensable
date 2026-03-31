@@ -7,6 +7,42 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
+/// Design skill guidance injected into phases where UI/UX decisions are made.
+/// Tells the agent about the search_design_knowledge MCP tool and when to use it.
+const DESIGN_SKILL_GUIDANCE: &str = r#"
+## Design Intelligence (UI/UX Pro Max)
+
+You have access to a comprehensive UI/UX design knowledge base via the `search_design_knowledge` MCP tool.
+**Use it whenever you make visual design decisions** — choosing styles, colors, fonts, layouts, or reviewing UI quality.
+
+### When to Use
+- Choosing a visual style for wireframes or prototypes
+- Selecting color palettes for the design system
+- Picking font pairings for typography tokens
+- Reviewing UI for accessibility, UX quality, or interaction patterns
+- Getting stack-specific best practices (React, Vue, Tailwind, etc.)
+- Deciding on chart types for data visualization
+
+### How to Use
+- `search_design_knowledge(query="saas dashboard modern", domain="product")` — product type recommendations
+- `search_design_knowledge(query="glassmorphism dark mode", domain="style")` — UI style details
+- `search_design_knowledge(query="fintech professional", domain="color")` — color palettes
+- `search_design_knowledge(query="elegant luxury", domain="typography")` — font pairings
+- `search_design_knowledge(query="animation accessibility", domain="ux")` — UX best practices
+- `search_design_knowledge(query="trend comparison", domain="chart")` — chart type guidance
+- `search_design_knowledge(query="memo rerender", stack="react")` — stack-specific patterns
+- `search_design_knowledge(query="")` — list all available domains and stacks
+
+### Key Design Rules (always follow)
+- **Accessibility**: Contrast 4.5:1, visible focus rings, alt text, keyboard navigation
+- **Touch targets**: Minimum 44×44px, 8px+ spacing between targets
+- **Icons**: Use SVG icons (Lucide, Heroicons), NEVER emoji as structural icons
+- **Typography**: Base 16px body, 1.5 line-height, semantic color tokens
+- **Animation**: 150–300ms micro-interactions, respect prefers-reduced-motion
+- **Layout**: Mobile-first breakpoints, no horizontal scroll, 4pt/8dp spacing scale
+"#;
+
+
 /// Extract the feature ID from a context key like "feature:{id}:{phase}".
 fn feature_id_from_context_key(context_key: &str) -> Option<&str> {
     let rest = context_key.strip_prefix("feature:")?;
@@ -137,6 +173,7 @@ Help the user define a clear project spec by understanding:
 
 Great — the project spec is defined! Now let's set up the design system.
 {}
+{}
 ## Your Goal
 Help the user define the visual foundation for their product:
 1. **Framework** — React or Vue (for prototypes later)
@@ -169,6 +206,7 @@ Help the user define the visual foundation for their product:
             project.name,
             project.description,
             memory_section,
+            DESIGN_SKILL_GUIDANCE,
         ),
         _ => build_system_prompt(project_path, project, "app:overview"), // shouldn't happen
     }
@@ -274,34 +312,69 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                     "You are working on the feature \"{}\".\n\
                     Feature description: {}\n\n\
                     ## Phase: Define (Converge)\n\
-                    Your goal is to **synthesize research into a clear feature specification**.\n\n\
+                    Your goal is to **synthesize research into a clear, actionable Product Requirements Document (PRD)**.\n\n\
                     **First, read existing research from the Discover phase:**\n\
                     Use list_artifacts(feature_id=\"{}\", phase=\"discover\", artifact_type=\"research-notes\") \
                     and similar for \"interviews\", \"insights\", \"opportunity-areas\", \"inspiration\". Read the full content of each.\n\n\
-                    **Spec writing process:**\n\
-                    1. Review all Discover-phase research artifacts to build context\n\
-                    2. Ask focused questions to resolve ambiguities and fill gaps\n\
-                    3. When you have enough understanding, create a spec using create_artifact:\n\
-                       - phase=\"define\", artifact_type=\"specs\"\n\
-                       - The spec should include:\n\
-                         - **title**: Feature name\n\
-                         - **overview**: What this feature does and why\n\
-                         - **userStories**: Array of {{ asA, iWant, soThat }} objects\n\
-                         - **acceptanceCriteria**: Array of testable criteria\n\
-                         - **outOfScope**: What this feature does NOT include\n\
-                         - **openQuestions**: Unresolved questions to address later\n\
-                         - **status**: Start as \"draft\", move to \"review\" when ready for user review\n\
-                         - **createdBy**: \"agent\"\n\
-                    4. Continue refining based on user feedback until they approve the spec\n\
-                    5. When approved, update the spec status to \"approved\"\n\n\
+                    ---\n\n\
+                    ### Step 1: Clarifying Questions\n\n\
+                    After reviewing Discover artifacts, ask 3-5 essential clarifying questions with lettered options. \
+                    Focus on gaps in problem/goal, core functionality, scope/boundaries, and success criteria.\n\n\
+                    Format questions like this so the user can answer quickly (e.g. \"1A, 2C, 3B\"):\n\
+                    ```\n\
+                    1. What is the primary goal?\n\
+                       A. Option one\n\
+                       B. Option two\n\
+                       C. Option three\n\
+                       D. Other: [please specify]\n\
+                    ```\n\n\
+                    ---\n\n\
+                    ### Step 2: Generate the PRD as a Spec Artifact\n\n\
+                    Once you have enough understanding, create a spec using create_artifact:\n\
+                    - phase=\"define\", artifact_type=\"specs\"\n\
+                    - status: \"draft\"\n\
+                    - createdBy: \"agent\"\n\n\
+                    The spec data MUST include these sections:\n\n\
+                    1. **title**: Feature name\n\
+                    2. **overview**: Brief description of the feature and the problem it solves\n\
+                    3. **goals**: Specific, measurable objectives (array of strings)\n\
+                    4. **userStories**: Array of structured stories, each with:\n\
+                       - **id**: \"US-001\", \"US-002\", etc.\n\
+                       - **title**: Short descriptive name\n\
+                       - **description**: \"As a [user], I want [feature] so that [benefit]\"\n\
+                       - **acceptanceCriteria**: Array of specific, verifiable criteria\n\
+                       Each story should be small enough to implement in one focused session.\n\
+                       Acceptance criteria must be verifiable — \"Works correctly\" is bad, \
+                       \"Button shows confirmation dialog before deleting\" is good.\n\
+                       For stories with UI changes, include: \"Verify visually in prototype preview\"\n\
+                    5. **functionalRequirements**: Numbered list of specific functionalities:\n\
+                       - \"FR-1: The system must allow users to...\"\n\
+                       - \"FR-2: When a user clicks X, the system must...\"\n\
+                       Be explicit and unambiguous.\n\
+                    6. **outOfScope**: What this feature will NOT include (critical for managing scope)\n\
+                    7. **designConsiderations** (optional): UI/UX requirements, relevant components to reuse\n\
+                    8. **technicalConsiderations** (optional): Constraints, dependencies, integration points, performance\n\
+                    9. **successMetrics**: How success will be measured\n\
+                    10. **openQuestions**: Remaining questions or areas needing clarification\n\n\
+                    **Writing guidelines:**\n\
+                    - Be explicit and unambiguous — the reader may be a junior developer or AI agent\n\
+                    - Avoid jargon or explain it\n\
+                    - Number requirements for easy reference\n\
+                    - Use concrete examples where helpful\n\n\
+                    ---\n\n\
+                    ### Step 3: Refine and Approve\n\n\
+                    4. Present the spec to the user for review\n\
+                    5. Continue refining based on user feedback until they approve\n\
+                    6. When approved, update the spec status to \"approved\" via update_artifact\n\n\
                     **You can also create supporting Define artifacts:**\n\
                     - Problem Statements (artifact_type=\"problem-statements\"): Crisp problem definitions\n\
                     - Requirements (artifact_type=\"requirements\"): Functional and non-functional requirements\n\
                     - Constraints (artifact_type=\"constraints\"): Technical, business, user, or regulatory constraints\n\n\
+                    ---\n\n\
                     **When to transition:**\n\
                     The Define phase is complete when the spec has been explicitly approved by the user. \
                     Specifically:\n\
-                    - A spec artifact exists with all required fields filled in\n\
+                    - A spec artifact exists with all required sections filled in\n\
                     - The user has reviewed the spec and confirmed it's correct\n\
                     - You have updated the spec status to \"approved\" via update_artifact\n\n\
                     After the spec is approved, suggest moving to Develop:\n\
@@ -409,10 +482,12 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                         - Ask: \"The prototype looks good! Ready to implement this feature in your actual codebase? \
                           I'll move us to the Deliver phase.\"\n\
                         - When the user agrees, call transition_phase(feature_id=\"{}\", to_phase=\"deliver\")\n\n\
+                        {}\n\n\
                         **Important:** Use feature_id=\"{}\" in all artifact tool calls.",
                         feature_name, feature_desc,
                         feature_id, feature_id, feature_id,
-                        fw, feature_id, fw, feature_id, feature_id, feature_id, feature_id, feature_id
+                        fw, feature_id, fw, feature_id, feature_id, feature_id, feature_id,
+                        DESIGN_SKILL_GUIDANCE, feature_id
                     )
                 }
                 "deliver" => {
@@ -623,8 +698,9 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
                             - Components should be self-contained and reusable\n\
                             - Layouts must accept a children prop for content injection\n\
                             - Examples should demonstrate all variants and states\n\
-                            - Use Tailwind CSS utility classes alongside design tokens",
-                            framework, ds_status, component_count, layout_count
+                            - Use Tailwind CSS utility classes alongside design tokens\n\n\
+                            {}",
+                            framework, ds_status, component_count, layout_count, DESIGN_SKILL_GUIDANCE
                         ),
                     )
                 }
@@ -672,30 +748,38 @@ fn build_system_prompt(project_path: &str, project: &Project, context_key: &str)
 {}
 {}
 ## Your Capabilities
-You have access to both Sensable MCP tools AND standard Claude tools.
 
-**Prefer MCP tools** for structured project data:
-- create_artifact / update_artifact / delete_artifact for research notes, insights, requirements
-- create_feature for defining new features (from the overview)
-- list_features to see all defined features
-- write_project_file for creating/editing files in the project folder (requires approval)
-- transition_phase to move a feature between phases or transition app-level phases
-- execute_command for running shell commands in the project (requires approval)
-- save_memory for saving context memory that persists across sessions
-- advance_onboarding for advancing the onboarding flow
+### CRITICAL: File Operations — MCP Tools ONLY
+**You do NOT have access to Write, Edit, Bash, sed, awk, cat, echo, or any built-in tool that modifies files or runs shell commands.**
+These tools are disabled and will fail if you try to use them. Do NOT attempt to use them under any circumstances.
 
-**Use built-in tools** for:
-- Reading files and exploring code (Read, Glob, Grep)
-- Web research during discovery (WebSearch, WebFetch)
+**To write or modify files:** ALWAYS use `write_project_file(path, content)` — this is the ONLY way to create or edit files.
+**To run commands:** ALWAYS use `execute_command(command, args)` — this is the ONLY way to run shell commands.
+**There is no other way.** Do not try sed, awk, echo, cat with redirects, or any shell-based file editing. They will not work.
 
-**Important:** Built-in Write, Edit, and Bash tools are not available. Use the MCP tools instead:
-- To write files: use write_project_file (scoped to this project folder)
-- To run commands: use execute_command (scoped to this project folder)
-These MCP tools require user approval, which provides a safe review step.
+### Available Tools
+
+**MCP tools (for all project operations):**
+- write_project_file — create or update any file (requires approval)
+- execute_command — run shell commands (requires approval)
+- create_artifact / update_artifact / delete_artifact — structured artifacts
+- create_feature — define new features
+- list_features — list all defined features
+- transition_phase — move between phases
+- save_memory — persist context across sessions
+- advance_onboarding — advance the onboarding flow
+- search_design_knowledge — query the UI/UX design knowledge base
+
+**Built-in tools (read-only):**
+- Read, Glob, Grep — reading files and exploring code
+- WebSearch, WebFetch — web research
 
 ## MCP Tools Reference
 
 ### Read Tools (auto-approved)
+
+#### search_design_knowledge(query, domain?, stack?, max_results?)
+Searches the UI/UX design knowledge base. Domains: style, color, typography, ux, product, chart, landing, reasoning, icon. Stacks: react, nextjs, vue, svelte, angular, flutter, react-native, swiftui, shadcn, html-tailwind, astro, nuxtjs, laravel, threejs, jetpack-compose. Call with empty query to list all options.
 
 #### get_project_state
 Returns the full project.json including name, description, features, current view, and phase statuses.

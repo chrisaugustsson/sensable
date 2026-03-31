@@ -185,6 +185,18 @@ pub struct SubmitPlanParams {
     content: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct SearchDesignKnowledgeParams {
+    /// Search query keywords (e.g., "glassmorphism dark mode", "saas dashboard", "animation accessibility")
+    query: String,
+    /// Specific domain to search in. Available: style, color, typography, ux, product, chart, landing, reasoning, icon. If omitted, searches across all key domains.
+    domain: Option<String>,
+    /// Search stack-specific guidelines instead of domains. Available: react, nextjs, vue, svelte, angular, flutter, react-native, swiftui, shadcn, html-tailwind, astro, nuxtjs, nuxt-ui, laravel, threejs, jetpack-compose.
+    stack: Option<String>,
+    /// Maximum results to return (default: 5)
+    max_results: Option<usize>,
+}
+
 #[tool_router]
 impl SensableMcpServer {
     pub fn new(project_path: String, approval_port: Option<u16>) -> Self {
@@ -1762,6 +1774,32 @@ impl SensableMcpServer {
             "Onboarding advanced: {} → {}.{}",
             current_status, next_status, guidance
         ))]))
+    }
+
+    #[tool(
+        name = "search_design_knowledge",
+        description = "Search the UI/UX design knowledge base for styles, colors, typography, UX guidelines, product type recommendations, chart types, and stack-specific best practices. Use this when making design decisions, choosing color palettes, selecting fonts, reviewing UI for accessibility, or following framework best practices. Returns curated design intelligence with specific recommendations."
+    )]
+    async fn search_design_knowledge(
+        &self,
+        params: Parameters<SearchDesignKnowledgeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let params = params.0;
+
+        if params.query.trim().is_empty() && params.domain.is_none() && params.stack.is_none() {
+            // Return available domains and stacks
+            let listing = crate::skills::ui_ux::list_domains();
+            return Ok(CallToolResult::success(vec![Content::text(listing)]));
+        }
+
+        let result = crate::skills::ui_ux::search(
+            &params.query,
+            params.domain.as_deref(),
+            params.stack.as_deref(),
+            params.max_results.unwrap_or(5),
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 }
 

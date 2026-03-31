@@ -121,6 +121,30 @@ pub fn project_json_path(project_path: &str) -> PathBuf {
     sensable_dir(project_path).join("project.json")
 }
 
+/// Ensure .sensable/.gitignore exists with entries for auto-generated and runtime files.
+pub fn ensure_sensable_gitignore(sensable_dir: &Path) {
+    let gitignore_path = sensable_dir.join(".gitignore");
+    let required_entries = ["prototype-server/", ".mcp-config-*.json"];
+
+    let mut contents = fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let mut changed = false;
+
+    for entry in &required_entries {
+        if !contents.contains(entry) {
+            if !contents.is_empty() && !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+            contents.push_str(entry);
+            contents.push('\n');
+            changed = true;
+        }
+    }
+
+    if changed {
+        let _ = fs::write(&gitignore_path, contents);
+    }
+}
+
 /// Resolve the base directory for artifacts, scoped by optional feature_id.
 fn artifact_base_dir(project_path: &str, feature_id: Option<&str>, phase: &str) -> PathBuf {
     let sensable = sensable_dir(project_path);
@@ -330,6 +354,9 @@ pub fn create_project(name: String, description: String, path: String) -> Result
 
     fs::write(project_json_path(&path), json)
         .map_err(|e| format!("Failed to write project.json: {}", e))?;
+
+    // Write .gitignore for auto-generated and runtime files
+    ensure_sensable_gitignore(&sensable);
 
     Ok(project)
 }

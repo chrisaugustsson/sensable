@@ -1,4 +1,4 @@
-use crate::commands::project::generate_preview_entries;
+use crate::commands::project::{ensure_sensable_gitignore, generate_preview_entries};
 use serde::{Deserialize, Serialize};
 use std::fs;
 #[cfg(unix)]
@@ -441,6 +441,12 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("{} install failed: {}", pkg_mgr, stderr));
     }
+
+    // Ensure .sensable/.gitignore ignores auto-generated / runtime files
+    let sensable_dir = server_dir
+        .parent()
+        .expect(".sensable dir is parent of prototype-server");
+    ensure_sensable_gitignore(sensable_dir);
 
     Ok(())
 }

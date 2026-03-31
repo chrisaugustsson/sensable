@@ -82,12 +82,30 @@ fn write_mcp_config(
     env_overrides: &HashMap<String, String>,
 ) -> Result<PathBuf, String> {
     let sensable_dir = Path::new(project_path).join(".sensable");
-    std::fs::create_dir_all(&sensable_dir)
-        .map_err(|e| format!("Failed to create .sensable dir: {}", e))?;
 
-    // Unique config file per agent context
-    let slug = context_key.replace(':', "-");
-    let config_path = sensable_dir.join(format!(".mcp-config-{}.json", slug));
+    // Place MCP config in the appropriate directory:
+    // - Feature contexts (feature:uuid:phase) → .sensable/features/{uuid}/
+    // - App-level contexts (app:view) → .sensable/
+    let (config_dir, slug) = if context_key.starts_with("feature:") {
+        let parts: Vec<&str> = context_key.splitn(3, ':').collect();
+        if parts.len() >= 2 {
+            let feature_id = parts[1];
+            let feature_dir = sensable_dir.join("features").join(feature_id);
+            let phase = parts.get(2).unwrap_or(&"agent");
+            (feature_dir, format!(".mcp-config-{}.json", phase))
+        } else {
+            let slug = context_key.replace(':', "-");
+            (sensable_dir.clone(), format!(".mcp-config-{}.json", slug))
+        }
+    } else {
+        let slug = context_key.replace(':', "-");
+        (sensable_dir.clone(), format!(".mcp-config-{}.json", slug))
+    };
+
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config dir: {}", e))?;
+
+    let config_path = config_dir.join(slug);
 
     let mut env = serde_json::Map::new();
     env.insert(

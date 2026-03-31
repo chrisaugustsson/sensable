@@ -1,4 +1,5 @@
 mod server;
+mod skills;
 
 use rmcp::ServiceExt;
 

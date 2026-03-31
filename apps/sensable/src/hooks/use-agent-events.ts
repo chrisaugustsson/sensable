@@ -2,6 +2,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { useAgentStore, deriveContextKey, getSessionState, featureIdFromContextKey, type AgentStatusType, type UsageData } from "../stores/agent-store";
+import type { FeaturePhaseName } from "@sensable/schemas";
 import { useProjectStore } from "../stores/project-store";
 import * as tauri from "../lib/tauri";
 
@@ -206,6 +207,44 @@ export function useAgentEvents() {
         if (session.needsPhaseRestart) {
           await store().handlePhaseTransition(key);
           useProjectStore.getState().bumpFileWriteVersion();
+
+          // Navigate to the new phase — the MCP server updated currentView on disk
+          // but we explicitly set it here to guarantee the UI jumps to the new step.
+          const featureId = featureIdFromContextKey(key);
+          const freshProject = useProjectStore.getState().project;
+          if (featureId && freshProject) {
+            const feature = freshProject.features.find((f) => f.id === featureId);
+            if (feature) {
+              const newPhase = feature.currentPhase as FeaturePhaseName;
+              useProjectStore.getState().setView({
+                type: "feature",
+                featureId,
+                phase: newPhase,
+              });
+
+              // Auto-send a starter message so the agent knows the phase changed
+              const starterMessages: Partial<Record<FeaturePhaseName, string>> = {
+                define:
+                  "We've completed the Discover phase and are now starting the Define phase. " +
+                  "Please review the research artifacts from Discover and help me synthesize them into a clear feature spec with requirements and constraints.",
+                develop:
+                  "We've completed the Define phase and are now starting the Develop phase. " +
+                  "Please review the spec and help me create wireframe layout options to explore.",
+                deliver:
+                  "We've completed the Develop phase and are now starting the Deliver phase. " +
+                  "Please review the approved prototype and help me implement this feature in the actual codebase.",
+              };
+              const starter = starterMessages[newPhase];
+              if (starter && projectPath) {
+                const newContextKey = `feature:${featureId}:${newPhase}`;
+                // Small delay to let the view update settle before starting the agent
+                setTimeout(() => {
+                  store().sendMessage(newContextKey, projectPath, starter);
+                }, 100);
+              }
+            }
+          }
+
           return; // Skip notification — session is being torn down
         }
 
@@ -244,6 +283,20 @@ export function useAgentEvents() {
             }
           }
           useProjectStore.getState().bumpFileWriteVersion();
+
+          // Navigate to the new phase (same as message-end handler)
+          const featureId = featureIdFromContextKey(key);
+          const freshProject = useProjectStore.getState().project;
+          if (featureId && freshProject) {
+            const feature = freshProject.features.find((f) => f.id === featureId);
+            if (feature) {
+              useProjectStore.getState().setView({
+                type: "feature",
+                featureId,
+                phase: feature.currentPhase as FeaturePhaseName,
+              });
+            }
+          }
         }
       }),
     );

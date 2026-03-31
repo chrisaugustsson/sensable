@@ -428,14 +428,7 @@ function DevelopContent({
           )}
         </>
       ) : (
-        <>
-          <PrototypePreview featureId={featureId} />
-          <div className="mt-4 text-center text-sm text-muted-foreground">
-            <p className="max-w-sm mx-auto">
-              Ask the agent to generate a prototype from your chosen wireframe and design system.
-            </p>
-          </div>
-        </>
+        <PrototypePreview featureId={featureId} />
       )}
 
       <ElementPrompt />
